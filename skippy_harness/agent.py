@@ -62,8 +62,12 @@ def main():
             if history.fit(messages):
                 ui.note("dropped old tool output to make this request fit")
 
-            with ui.working(active_form()):
-                message, usage = call_llm(messages + [injection])
+            try:
+                with ui.working(active_form()):
+                    message, usage = call_llm(messages + [injection])
+            except Exception as err:
+                ui.note(f"API Error ({config.ACTIVE_PROVIDER} / {config.MODEL}):\n  {err}\nTip: Type /model to change model, or /provider to switch provider.")
+                break
 
             messages.append(message.model_dump(exclude_none=True))
             session.save(messages)

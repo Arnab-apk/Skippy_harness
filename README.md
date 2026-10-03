@@ -44,6 +44,7 @@ pip install -e .
 
 Skippy Harness supports multiple LLM providers out of the box with auto-detection:
 
+- **NVIDIA NIM** (Llama 3.3, Nemotron, DeepSeek R1, Qwen 2.5 Coder via `integrate.api.nvidia.com`)
 - **OpenRouter** (Claude 3.7/3.5, GPT-4o, DeepSeek, etc.)
 - **OpenAI** (GPT-4o, o3-mini, o1)
 - **Groq** (Ultra-fast Llama 3.3, Qwen 2.5 Coder)

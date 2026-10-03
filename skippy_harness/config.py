@@ -8,6 +8,21 @@ PROJECT_ENV = Path.cwd() / ".env"
 USER_ENV = Path.home() / ".agents" / "env"
 
 PROVIDERS = {
+    "nvidia": {
+        "name": "NVIDIA NIM",
+        "description": "NVIDIA Inference Microservices (Llama 3.3, Nemotron, DeepSeek R1)",
+        "base_url": "https://integrate.api.nvidia.com/v1",
+        "env_key": "NVIDIA_API_KEY",
+        "default_model": "meta/llama-3.3-70b-instruct",
+        "models": [
+            "meta/llama-3.3-70b-instruct",
+            "nvidia/llama-3.1-nemotron-70b-instruct",
+            "deepseek-ai/deepseek-r1",
+            "deepseek-ai/deepseek-v3",
+            "qwen/qwen2.5-coder-32b-instruct",
+            "mistralai/codestral-22b-instruct-v0.1",
+        ],
+    },
     "openrouter": {
         "name": "OpenRouter",
         "description": "Unified API (Claude 3.7, GPT-4o, DeepSeek, Llama)",
@@ -133,21 +148,27 @@ COMPACT_TO = 0.35
 def detect_provider():
     # 1. Explicit PROVIDER env var
     req = os.environ.get("PROVIDER", "").lower().strip()
+    if req in ("nvidia", "nim"):
+        return "nvidia"
     if req and req in PROVIDERS:
         return req
 
-    # 2. Check for configured provider keys
+    # 2. Check for NVIDIA keys
+    if os.environ.get("NVIDIA_API_KEY") or os.environ.get("NV_API_KEY") or os.environ.get("NGC_API_KEY"):
+        return "nvidia"
+
+    # 3. Check for configured provider keys
     for p_id, p_info in PROVIDERS.items():
-        if p_id in ("custom", "ollama"):
+        if p_id in ("custom", "ollama", "nvidia"):
             continue
         if os.environ.get(p_info["env_key"]):
             return p_id
 
-    # 3. Check for custom endpoint
+    # 4. Check for custom endpoint
     if os.environ.get("BASE_URL") and os.environ.get("API_KEY"):
         return "custom"
 
-    # 4. Check for Ollama
+    # 5. Check for Ollama
     if os.environ.get("OLLAMA_API_KEY") or os.environ.get("OLLAMA_HOST"):
         return "ollama"
 
@@ -160,6 +181,13 @@ def is_configured():
         return False
     if provider == "ollama":
         return True
+    if provider == "nvidia":
+        return bool(
+            os.environ.get("NVIDIA_API_KEY")
+            or os.environ.get("NV_API_KEY")
+            or os.environ.get("NGC_API_KEY")
+            or os.environ.get("API_KEY")
+        )
     p_info = PROVIDERS[provider]
     key = os.environ.get(p_info["env_key"]) or os.environ.get("API_KEY")
     return bool(key)
@@ -169,10 +197,12 @@ def configure(provider=None, model=None, api_key=None, base_url=None):
     global ACTIVE_PROVIDER, BASE_URL, API_KEY, MODEL, CONTEXT_WINDOW
 
     if not provider:
-        provider = detect_provider() or "openrouter"
+        provider = detect_provider() or "nvidia"
 
     provider = provider.lower().strip()
-    if provider not in PROVIDERS:
+    if provider in ("nvidia", "nim"):
+        provider = "nvidia"
+    elif provider not in PROVIDERS:
         provider = "custom"
 
     p_info = PROVIDERS[provider]
@@ -189,6 +219,13 @@ def configure(provider=None, model=None, api_key=None, base_url=None):
         API_KEY = api_key
     elif provider == "ollama":
         API_KEY = os.environ.get("OLLAMA_API_KEY", "ollama")
+    elif provider == "nvidia":
+        API_KEY = (
+            os.environ.get("NVIDIA_API_KEY")
+            or os.environ.get("NV_API_KEY")
+            or os.environ.get("NGC_API_KEY")
+            or os.environ.get("API_KEY", "")
+        )
     else:
         API_KEY = (
             os.environ.get(p_info["env_key"])
@@ -197,8 +234,16 @@ def configure(provider=None, model=None, api_key=None, base_url=None):
 
     if model:
         MODEL = model
+    elif provider and os.environ.get("PROVIDER") and os.environ.get("PROVIDER") != provider:
+        MODEL = p_info["default_model"]
     elif os.environ.get("MODEL"):
-        MODEL = os.environ["MODEL"]
+        env_m = os.environ["MODEL"]
+        if provider == "nvidia" and env_m.startswith(("anthropic/", "google/", "openai/")):
+            MODEL = p_info["default_model"]
+        elif provider == "openai" and env_m.startswith(("anthropic/", "google/", "meta/", "nvidia/")):
+            MODEL = p_info["default_model"]
+        else:
+            MODEL = env_m
     else:
         MODEL = p_info["default_model"]
 
@@ -246,7 +291,16 @@ def interactive_setup(provider=None, model=None):
 
     for i, p_id in enumerate(p_keys, 1):
         p_data = PROVIDERS[p_id]
-        has_key = bool(os.environ.get(p_data["env_key"]) or (p_id == "ollama"))
+        if p_id == "nvidia":
+            has_key = bool(
+                os.environ.get("NVIDIA_API_KEY")
+                or os.environ.get("NV_API_KEY")
+                or os.environ.get("NGC_API_KEY")
+            )
+        elif p_id == "ollama":
+            has_key = True
+        else:
+            has_key = bool(os.environ.get(p_data["env_key"]))
         status = "[#9ece6a]Ready[/]" if has_key else "[#565f89]Key not set[/]"
         table.add_row(str(i), p_data["name"], p_data["description"], status)
 
@@ -254,20 +308,29 @@ def interactive_setup(provider=None, model=None):
     console.print()
 
     selected_provider = provider
+    if selected_provider and selected_provider.lower() in ("nvidia", "nim"):
+        selected_provider = "nvidia"
+
     if not selected_provider:
         while True:
             try:
-                choice = input("Select provider [1-9] (default 1: OpenRouter): ").strip()
+                choice = input(f"Select provider [1-{len(p_keys)}] (default 1: NVIDIA NIM): ").strip()
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[red]Setup cancelled.[/]")
                 sys.exit(0)
             if not choice:
-                selected_provider = "openrouter"
+                selected_provider = "nvidia"
+                break
+            if choice.lower() in ("nvidia", "nim"):
+                selected_provider = "nvidia"
+                break
+            if choice.lower() in p_keys:
+                selected_provider = choice.lower()
                 break
             if choice.isdigit() and 1 <= int(choice) <= len(p_keys):
                 selected_provider = p_keys[int(choice) - 1]
                 break
-            console.print("[red]Invalid selection. Please choose a valid number.[/]")
+            console.print("[red]Invalid selection. Please choose a valid number or provider name.[/]")
 
     p_info = PROVIDERS[selected_provider]
     console.print(f"\nConfiguring [bold #7aa2f7]{p_info['name']}[/]...")
@@ -291,7 +354,12 @@ def interactive_setup(provider=None, model=None):
         except (KeyboardInterrupt, EOFError):
             sys.exit(0)
     else:
-        existing_key = os.environ.get(p_info["env_key"], "")
+        existing_key = (
+            os.environ.get("NVIDIA_API_KEY")
+            or os.environ.get("NV_API_KEY")
+            if selected_provider == "nvidia"
+            else os.environ.get(p_info["env_key"], "")
+        )
         if existing_key:
             console.print(f"Found existing key in environment: [dim]{existing_key[:6]}...{existing_key[-4:]}[/]")
             try:
