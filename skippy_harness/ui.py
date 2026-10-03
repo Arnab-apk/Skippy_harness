@@ -7,6 +7,10 @@ and dicts and decides how they look.
 import json
 import os
 import sys
+import re
+import difflib
+from collections import OrderedDict
+from pathlib import Path
 from contextlib import contextmanager
 
 from rich.console import Console, Group
@@ -25,8 +29,22 @@ ACCENT = "#7aa2f7"
 USER = "#9ece6a"
 TOOL = "#e0af68"
 MUTED = "#565f89"
+OUTPUT = "#a9b1d6"
+ERROR = "#f7768e"
 
-MAX_TOOL_OUTPUT_LINES = 12
+MAX_TOOL_OUTPUT_LINES = 4
+
+LOGO = r"""   _____ __ __ ____ ____ ____ __  __
+  / ___// //_/  _// __ \/ __ \\ \/ /
+  \__ \/ ,<  / / / /_/ / /_/ /\  /
+ ___/ / /| |/ / / ____/ ____/ / /
+/____/_/ |_/___/_/   /_/     /_/"""
+
+TOOL_LABELS = {
+    "bash": "Shell", "read_file": "Read", "write_file": "Write",
+    "str_replace": "Edit", "read_skill": "Skill", "task": "Explore",
+    "write_todos": "Plan",
+}
 
 TODO_STYLES = {
     "done": f"{MUTED} strike",
@@ -46,24 +64,35 @@ class UI:
                         pass
         self.console = Console()
         self._totals = {}
+        self.verbose = False
+        self.tools_expanded = False
+        self._tool_results = OrderedDict()
 
     # ---------------------------------------------------------------- input
 
-    def banner(self, sandbox_name="none", provider="", model=""):
+    def banner(self, sandbox_name="none", provider="", model="", art=True):
         self.console.print()
-        self.console.print(
-            Rule(Text(" Skippy Harness ", style=f"bold {ACCENT}"), style=MUTED)
-        )
+        if art:
+            logo = LOGO if self.console.width >= 44 else "S K I P P Y"
+            colors = ["#bb9af7", "#9d7cd8", ACCENT, "#7dcfff", "#73daca"]
+            for index, line in enumerate(logo.splitlines()):
+                self.console.print(Padding(Text(line, style=f"bold {colors[index % len(colors)]}"), (0, 0, 0, 2)))
+            self.console.print(Padding(Text("terminal coding companion", style=OUTPUT), (0, 0, 0, 3)))
+            self.console.print()
+        else:
+            self.console.print(Padding(Text("SKIPPY", style=f"bold {ACCENT}"), (0, 0, 0, 2)))
         parts = []
         if provider:
-            parts.append(f"provider: {provider}")
+            parts.append(provider)
         if model:
-            parts.append(f"model: {model}")
+            parts.append(model)
         parts.append(f"sandbox: {sandbox_name}")
-        info_line = "  ·  ".join(parts) + "  ·  opt-enter for a newline  ·  ctrl-d to exit"
+        info_line = "  /  ".join(parts)
         self.console.print(
-            Padding(Text(info_line, style=MUTED), (0, 0, 0, 2))
+            Padding(Text(info_line, style=OUTPUT), (0, 0, 0, 2))
         )
+        self.console.print(Padding(Text("/model  /provider  |  Ctrl+O: tool details  |  Alt+Enter: newline  |  Ctrl+D: exit", style=MUTED), (0, 0, 0, 2)))
+        self.console.print(Padding(Rule(style=MUTED), (1, 2, 0, 2)))
 
     def clear(self):
         self.console.clear()
@@ -97,6 +126,7 @@ class UI:
                         call["function"]["name"],
                         args,
                         results.get(call["id"], ""),
+                        call_id=call["id"],
                     )
 
     def approve(self, reason):
@@ -166,41 +196,46 @@ class UI:
             )
         )
 
-    def tool(self, name, args, result, nested=False):
+    def tool(self, name, args, result, nested=False, call_id=None):
+        if call_id:
+            result = self._tool_results.get(call_id, result)
+            self._tool_results[call_id] = result
+            self._tool_results.move_to_end(call_id)
+            while len(self._tool_results) > 200:
+                self._tool_results.popitem(last=False)
         if name == "write_todos" and args.get("todos") and not result.startswith("Error:"):
             return self.todos(args["todos"])
 
-        header = Text.assemble(
-            (f"{name} ", f"bold {TOOL}"),
-            (self._format_args(args), MUTED),
-        )
-        self.console.print(
-            Padding(
-                Panel(
-                    Group(header, Rule(style=MUTED), self._format_result(result)),
-                    border_style=MUTED,
-                    padding=(0, 1),
-                ),
-                (1, 2, 0, 6 if nested else 2),
-            )
-        )
+        failed, status = self._tool_status(result)
+        color = ERROR if failed else USER
+        label = TOOL_LABELS.get(name, name)
+        detail = self._tool_detail(name, args)
+        header = Text.assemble(("! " if failed else "+ ", color),
+                               (label, f"bold {TOOL}"), (f"  {detail}", OUTPUT),
+                               (f"  [{status}]", color))
+        indent = 6 if nested else 2
+        self.console.print(Padding(header, (1, 2, 0, indent)))
+        expanded = self.tools_expanded or self.verbose
+        if name == "str_replace" and not failed and isinstance(args.get("old_str"), str) and isinstance(args.get("new_str"), str):
+            difference = list(difflib.unified_diff(args["old_str"].splitlines(), args["new_str"].splitlines(), lineterm="", n=1))[2:]
+            body = "\n".join(difference)
+        elif name == "write_file" and not failed and not expanded:
+            return  # The path and line count are the useful result of a write.
+        elif name == "write_file" and not failed and expanded:
+            body = str(args.get("content", ""))
+        else:
+            body = re.sub(r"^Exit code: -?\d+\n?", "", result)
+        if body.strip():
+            rendered = self._format_result(body, expanded=expanded, failed=failed, diff=name == "str_replace" and not failed)
+            self.console.print(Padding(rendered, (0, 2, 0, indent + 2)))
 
     def subagent(self, description):
         """Shown to you, never to the main agent - it only gets the report."""
-        self.console.print(
-            Padding(
-                Panel(
-                    Text(description.strip(), style=MUTED),
-                    title=Text("subagent · own context", style=f"bold {ACCENT}"),
-                    title_align="left",
-                    border_style=ACCENT,
-                    padding=(0, 1),
-                ),
-                (1, 2, 0, 4),
-            )
-        )
+        self.console.print(Padding(Text.assemble(("> Explore  ", f"bold {ACCENT}"), (self._one_line(description), OUTPUT)), (1, 2, 0, 2)))
 
     def injection(self, text):
+        if not self.verbose:
+            return
         self.console.print(
             Padding(
                 Panel(
@@ -235,11 +270,27 @@ class UI:
         ):
             yield
 
+    @contextmanager
+    def executing(self, name, args):
+        if name == "task":  # Its own loop renders a spinner.
+            yield
+        else:
+            label = TOOL_LABELS.get(name, name)
+            with self.working(f"{label.lower()} {self._tool_detail(name, args)}"):
+                yield
+
+    def toggle_tools(self):
+        self.tools_expanded = not self.tools_expanded
+        return "tool details expanded" if self.tools_expanded else "tool details collapsed"
+
     # ---------------------------------------------------------------- usage
 
     def usage(self, stats):
         for key, value in stats.items():
             self._totals[key] = self._totals.get(key, 0) + (value or 0)
+
+        if not self.verbose:
+            return
 
         parts = " · ".join(
             f"{value:,} {key.replace('_tokens', '')}"
@@ -287,6 +338,13 @@ class UI:
         """The plan, as a checklist. The raw tool output is never worth showing."""
         done = sum(1 for t in todos if t["status"] == "done")
 
+        if not (self.tools_expanded or self.verbose):
+            active = next((t["content"] for t in todos if t["status"] == "in_progress"), "")
+            suffix = f"  {active}" if active else ""
+            line = Text.assemble(("+ Plan  ", f"bold {TOOL}"), (f"{done}/{len(todos)} done", USER), (suffix, OUTPUT))
+            self.console.print(Padding(line, (1, 2, 0, 2)))
+            return
+
         rows = Table.grid(padding=(0, 1))
         rows.add_column(no_wrap=True)
         rows.add_column(overflow="fold")
@@ -298,18 +356,8 @@ class UI:
                 Text(todo["content"], style=style),
             )
 
-        self.console.print(
-            Padding(
-                Panel(
-                    rows,
-                    title=Text(f"todos {done}/{len(todos)}", style=f"bold {TOOL}"),
-                    title_align="left",
-                    border_style=MUTED,
-                    padding=(0, 1),
-                ),
-                (1, 2, 0, 2),
-            )
-        )
+        self.console.print(Padding(Text(f"+ Plan  {done}/{len(todos)} done", style=f"bold {TOOL}"), (1, 2, 0, 2)))
+        self.console.print(Padding(rows, (0, 2, 0, 4)))
 
     # -------------------------------------------------------------- helpers
 
@@ -318,13 +366,53 @@ class UI:
             return str(next(iter(args.values())))
         return json.dumps(args)
 
-    def _format_result(self, result):
+    def _one_line(self, value):
+        return " ".join(str(value).split())
+
+    def _tool_detail(self, name, args):
+        if name == "bash":
+            return self._one_line(args.get("command", ""))
+        if name in ("read_file", "write_file", "str_replace"):
+            path = str(args.get("path", ""))
+            try:
+                path = Path(path).resolve().relative_to(Path.cwd()).as_posix()
+            except (OSError, ValueError):
+                pass
+            if name == "write_file" and isinstance(args.get("content"), str):
+                path += f"  ({len(args['content'].splitlines())} lines)"
+            return path
+        return self._one_line(args.get("description", args.get("name", self._format_args(args))))
+
+    def _tool_status(self, result):
+        exit_match = re.match(r"Exit code: (-?\d+)", result)
+        if exit_match:
+            code = int(exit_match[1])
+            return code != 0, "ok" if code == 0 else f"exit {code}"
+        for prefix, status in (("Error:", "error"), ("Blocked by policy", "blocked"),
+                               ("The user denied", "denied"), ("Timed out", "timeout"),
+                               ("(stopped after", "incomplete")):
+            if result.startswith(prefix):
+                return True, status
+        return False, "ok" if result else "no result"
+
+    def _format_result(self, result, expanded=False, failed=False, diff=False):
         lines = result.strip().splitlines() or ["(no output)"]
-        shown = lines[:MAX_TOOL_OUTPUT_LINES]
-        body = Text("\n".join(shown), style=MUTED)
+        shown = lines if expanded else lines[:MAX_TOOL_OUTPUT_LINES]
+        body = Text()
+        width = max(12, self.console.width - 10)
+        for index, line in enumerate(shown):
+            if index:
+                body.append("\n")
+            style = ERROR if failed else OUTPUT
+            if diff:
+                style = ERROR if line.startswith("-") else USER if line.startswith("+") else MUTED
+            rendered_line = Text(line, style=style)
+            if not expanded:
+                rendered_line.truncate(width, overflow="ellipsis")
+            body.append_text(rendered_line)
         hidden = len(lines) - len(shown)
         if hidden > 0:
-            body.append(f"\n… {hidden} more lines", style=f"italic {TOOL}")
+            body.append(f"\n... {hidden} more lines | Ctrl+O or /tools to expand", style=MUTED)
         return body
 
 
