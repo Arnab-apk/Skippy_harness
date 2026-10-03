@@ -54,6 +54,7 @@ def main():
             continue
 
         messages.append({"role": "user", "content": user_input})
+        usage = None
 
         while True:
             injection = reminder()
@@ -96,7 +97,7 @@ def main():
         history.sweep()   # the turn is over: bin its temp files
         history.strip(messages)  # ...and shrink the tool output it produced
 
-        if compact.needed(usage):
+        if usage and compact.needed(usage):
             messages = commands.compact(messages)
 
     ui.summary()
