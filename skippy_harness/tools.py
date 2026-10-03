@@ -1,5 +1,9 @@
 import json
 import subprocess
+from pathlib import Path
+import os
+import stat
+import tempfile
 
 from . import history
 from . import sandbox
@@ -20,25 +24,43 @@ def bash(command: str) -> str:
             f"Timed out after {expired.timeout}s and was killed. "
             "Narrow it down - search inside the working directory rather than /."
         )
-    return history.cap((result.stdout + result.stderr) or "(no output)")
+    output = (result.stdout + result.stderr) or "(no output)"
+    return history.cap(f"Exit code: {result.returncode}\n{output}")
 
 
 def read_file(path: str) -> str:
     """Read a file and return its contents."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return history.cap(f.read())
 
 
 def write_file(path: str, content: str) -> str:
     """Create a file, or overwrite it if it already exists."""
-    with open(path, "w") as f:
-        f.write(content)
+    write_atomic(path, content)
     return f"Wrote {path}"
+
+
+def write_atomic(path, content):
+    destination = Path(path).resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=destination.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(content)
+        if destination.exists():
+            temporary.chmod(stat.S_IMODE(destination.stat().st_mode))
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def str_replace(path, old_str, new_str, allow_multi_edit=False):
     """Swap exact text in a file. old_str must match exactly once."""
-    with open(path) as f:
+    if not old_str:
+        return "Error: old_str must not be empty."
+    with open(path, encoding="utf-8") as f:
         content = f.read()
 
     count = content.count(old_str)
@@ -51,12 +73,11 @@ def str_replace(path, old_str, new_str, allow_multi_edit=False):
             "or set allow_multi_edit to replace them all."
         )
 
-    with open(path, "w") as f:
-        f.write(content.replace(old_str, new_str))
+    write_atomic(path, content.replace(old_str, new_str))
     return f"Replaced {count} match(es) in {path}"
 
 
-def execute(tool_call):
+def execute(tool_call, allowed_names=None, read_only=False):
     """Run one tool call through the permission layer.
 
     Shared by the main loop and by subagents, so a subagent is fenced in by
@@ -72,14 +93,34 @@ def execute(tool_call):
     name = tool_call.function.name
     try:
         args = json.loads(tool_call.function.arguments)
-    except json.JSONDecodeError as broken:
+    except (json.JSONDecodeError, TypeError) as broken:
         return {}, f"Error: arguments were not valid JSON ({broken})."
+
+    if not isinstance(args, dict):
+        return {}, "Error: tool arguments must be a JSON object."
+    if allowed_names is not None and name not in allowed_names:
+        return args, f"Blocked by policy: {name} is not available to this subagent."
 
     if name not in TOOLS:
         return args, f"Error: no tool named '{name}'. Available: {', '.join(TOOLS)}."
 
+    parameters = next(s["function"]["parameters"] for s in TOOL_SCHEMAS if s["function"]["name"] == name)
+    for required in parameters.get("required", []):
+        if required not in args:
+            return args, f"Error: {name} requires {required}."
+    types = {"string": str, "boolean": bool, "array": list, "object": dict}
+    for key, value in args.items():
+        prop = parameters.get("properties", {}).get(key)
+        if prop is None:
+            return args, f"Error: unknown argument {key} for {name}."
+        expected = types.get(prop.get("type"))
+        if expected is not None and not isinstance(value, expected):
+            return args, f"Error: {key} for {name} must be a {prop['type']}."
+
     try:
         action, reason = check(name, args)
+        if read_only and (name in ("write_file", "str_replace", "write_todos", "task") or action != "allow"):
+            return args, "Blocked by policy: exploration subagents may only use approved read-only tools."
         if action == "deny":
             return args, f"Blocked by policy: {reason}"
         if action == "ask" and not ui.approve(reason):

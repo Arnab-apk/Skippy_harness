@@ -78,9 +78,15 @@ class UI:
                 if message.get("content"):
                     self.agent(message["content"])
                 for call in message.get("tool_calls") or []:
+                    try:
+                        args = json.loads(call["function"]["arguments"])
+                        if not isinstance(args, dict):
+                            args = {"arguments": args}
+                    except (TypeError, json.JSONDecodeError):
+                        args = {"arguments": call["function"]["arguments"]}
                     self.tool(
                         call["function"]["name"],
-                        json.loads(call["function"]["arguments"]),
+                        args,
                         results.get(call["id"], ""),
                     )
 
@@ -96,15 +102,34 @@ class UI:
         self.console.print(Padding(Text(text, style=MUTED), (1, 0, 0, 2)))
 
     def pick(self, title, rows):
-        """Numbered list; returns the chosen index or None."""
-        self.console.print(Padding(Text(title, style=f"bold {ACCENT}"), (1, 0, 0, 2)))
-        for i, row in enumerate(rows):
-            self.console.print(Padding(Text(f"{i:>3}  {row}", style=MUTED), (0, 0, 0, 2)))
-        try:
-            answer = prompt.read("\n  number> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        return int(answer) if answer.isdigit() and int(answer) < len(rows) else None
+        """Searchable, paginated list using the same 1-based numbering as setup."""
+        indices, page = list(range(len(rows))), 0
+        while True:
+            self.console.print(Padding(Text(title, style=f"bold {ACCENT}"), (1, 0, 0, 2)))
+            visible = indices[page * 20:(page + 1) * 20]
+            for i in visible:
+                self.console.print(Padding(Text(f"{i + 1:>3}  {rows[i]}", style=MUTED), (0, 0, 0, 2)))
+            try:
+                answer = prompt.read("\n  number, search text, n/p page, Enter to cancel> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
+            if not answer:
+                return None
+            if answer.isdigit():
+                selected = int(answer) - 1
+                if selected in visible:
+                    return selected
+                self.note("Choose a number displayed on this page.")
+            elif answer.lower() == "n":
+                if (page + 1) * 20 < len(indices):
+                    page += 1
+            elif answer.lower() == "p":
+                page = max(0, page - 1)
+            else:
+                indices = [i for i, row in enumerate(rows) if answer.lower() in row.lower()]
+                page = 0
+                if not indices:
+                    self.note("No matches. Enter another search term.")
 
     def ask(self):
         self.console.print()
@@ -112,7 +137,7 @@ class UI:
             return prompt.read("> ").strip()
         except (EOFError, KeyboardInterrupt):
             self.console.print()
-            return ""
+            return None
 
     # --------------------------------------------------------------- output
 
@@ -133,7 +158,7 @@ class UI:
         )
 
     def tool(self, name, args, result, nested=False):
-        if name == "write_todos" and args.get("todos"):
+        if name == "write_todos" and args.get("todos") and not result.startswith("Error:"):
             return self.todos(args["todos"])
 
         header = Text.assemble(

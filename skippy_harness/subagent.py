@@ -32,7 +32,7 @@ MAX_TURNS = 12  # a runaway explorer is worse than a missing answer
 # list it is offered, so it cannot call them. The "do not edit files" rule in
 # the prompt below is only asking nicely. To make that one structural too, add
 # write_file and str_replace to this set.
-WITHHELD = {"task", "write_todos", "str_replace", "write"}
+WITHHELD = {"task", "write_todos", "str_replace", "write_file"}
 
 
 SYSTEM_PROMPT = f"""
@@ -116,7 +116,7 @@ def task(description: str) -> str:
             # The same executor the main loop uses, so the same permission
             # rules and the same sandbox apply. A subagent is a second caller,
             # not a privileged one - it is not a way around any of that.
-            args, result = execute(tool_call)
+            args, result = execute(tool_call, allowed_names={s["function"]["name"] for s in toolset()}, read_only=True)
             ui.tool(tool_call.function.name, args, result, nested=True)
             messages.append({
                 "role": "tool",

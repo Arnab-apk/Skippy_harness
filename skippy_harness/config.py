@@ -2,6 +2,7 @@
 
 import os
 import sys
+from getpass import getpass
 from pathlib import Path
 
 PROJECT_ENV = Path.cwd() / ".env"
@@ -138,9 +139,25 @@ ACTIVE_PROVIDER = ""
 BASE_URL = ""
 API_KEY = ""
 MODEL = ""
-CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", 128_000))
+CONTEXT_WINDOW = 128_000
 COMPACT_AT = 0.85
 COMPACT_TO = 0.35
+_SELECTED_MODELS = {}
+
+
+def positive_int(name, default):
+    try:
+        return max(1, int(os.environ.get(name, default)))
+    except ValueError:
+        return default
+
+
+def provider_key(provider):
+    if provider == "ollama":
+        return os.environ.get("OLLAMA_API_KEY") or "ollama"
+    if provider == "nvidia":
+        return next((os.environ[k] for k in ("NVIDIA_API_KEY", "NV_API_KEY", "NGC_API_KEY") if os.environ.get(k)), "")
+    return os.environ.get(PROVIDERS[provider]["env_key"], "")
 
 
 def detect_provider():
@@ -173,82 +190,78 @@ def detect_provider():
     return None
 
 
-def is_configured():
-    provider = detect_provider()
+def is_configured(provider=None):
+    provider = provider or ACTIVE_PROVIDER or detect_provider()
     if not provider:
         return False
     if provider == "ollama":
         return True
-    if provider == "nvidia":
-        return bool(
-            os.environ.get("NVIDIA_API_KEY")
-            or os.environ.get("NV_API_KEY")
-            or os.environ.get("NGC_API_KEY")
-            or os.environ.get("API_KEY")
-        )
-    p_info = PROVIDERS[provider]
-    key = os.environ.get(p_info["env_key"]) or os.environ.get("API_KEY")
-    return bool(key)
+    return bool(provider_key(provider)) and (provider != "custom" or bool(os.environ.get("BASE_URL")))
 
 
 def configure(provider=None, model=None, api_key=None, base_url=None):
     global ACTIVE_PROVIDER, BASE_URL, API_KEY, MODEL, CONTEXT_WINDOW
 
     if not provider:
-        provider = detect_provider() or "nvidia"
+        provider = ACTIVE_PROVIDER or detect_provider() or "ollama"
 
     provider = provider.lower().strip()
     if provider in ("nvidia", "nim"):
         provider = "nvidia"
     elif provider not in PROVIDERS:
-        provider = "custom"
+        raise ValueError(f"Unknown provider: {provider}. Choose ollama or openrouter.")
 
     p_info = PROVIDERS[provider]
+    if ACTIVE_PROVIDER and MODEL:
+        _SELECTED_MODELS[ACTIVE_PROVIDER] = MODEL
     ACTIVE_PROVIDER = provider
 
     if base_url:
         BASE_URL = base_url
     elif provider == "custom":
         BASE_URL = os.environ.get("BASE_URL", "")
+    elif provider == "ollama":
+        BASE_URL = os.environ.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_HOST") or p_info["base_url"]
     else:
         BASE_URL = p_info["base_url"]
 
-    if api_key:
-        API_KEY = api_key
-    elif provider == "ollama":
-        API_KEY = os.environ.get("OLLAMA_API_KEY", "ollama")
-    elif provider == "nvidia":
-        API_KEY = (
-            os.environ.get("NVIDIA_API_KEY")
-            or os.environ.get("NV_API_KEY")
-            or os.environ.get("NGC_API_KEY")
-            or os.environ.get("API_KEY", "")
-        )
-    else:
-        API_KEY = (
-            os.environ.get(p_info["env_key"])
-            or os.environ.get("API_KEY", "")
-        )
+    if provider == "ollama":
+        BASE_URL = BASE_URL.rstrip("/")
+        if "://" not in BASE_URL:
+            BASE_URL = "http://" + BASE_URL
+        if not BASE_URL.endswith("/v1"):
+            BASE_URL += "/v1"
+    API_KEY = api_key if api_key is not None else provider_key(provider)
 
     if model:
         MODEL = model
-    elif provider and os.environ.get("PROVIDER") and os.environ.get("PROVIDER") != provider:
-        MODEL = p_info["default_model"]
-    elif os.environ.get("MODEL"):
-        env_m = os.environ["MODEL"]
-        if provider == "nvidia" and env_m.startswith(("anthropic/", "google/", "openai/")):
-            MODEL = p_info["default_model"]
-        elif provider == "openai" and env_m.startswith(("anthropic/", "google/", "meta/", "nvidia/")):
-            MODEL = p_info["default_model"]
-        else:
-            MODEL = env_m
     else:
-        MODEL = p_info["default_model"]
+        MODEL = (_SELECTED_MODELS.get(provider)
+                 or os.environ.get(f"{provider.upper()}_MODEL")
+                 or (os.environ.get("MODEL") if os.environ.get("PROVIDER", "").lower() == provider else None)
+                 or p_info["default_model"])
+    MODEL = MODEL.strip()
+    _SELECTED_MODELS[provider] = MODEL
 
-    CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", 128_000))
+    CONTEXT_WINDOW = positive_int("CONTEXT_WINDOW", 8192 if provider == "ollama" else 128_000)
+    # Any caller of configure, including the CLI, must invalidate the client.
+    llm_module = sys.modules.get(__package__ + ".llm")
+    if llm_module and hasattr(llm_module, "reset_client"):
+        llm_module.reset_client()
 
 
-def save_env_var(key: str, value: str, env_path: Path = PROJECT_ENV):
+def persist_selection():
+    for key, value in (("PROVIDER", ACTIVE_PROVIDER), ("MODEL", MODEL),
+                       (f"{ACTIVE_PROVIDER.upper()}_MODEL", MODEL)):
+        save_env_var(key, value)
+        os.environ[key] = value
+    if ACTIVE_PROVIDER == "ollama":
+        save_env_var("OLLAMA_BASE_URL", BASE_URL)
+        os.environ["OLLAMA_BASE_URL"] = BASE_URL
+
+
+def save_env_var(key: str, value: str, env_path: Path = None):
+    env_path = env_path or PROJECT_ENV
     lines = []
     found = False
     if env_path.exists():
@@ -280,7 +293,7 @@ def interactive_setup(provider=None, model=None):
         )
     )
 
-    p_keys = list(PROVIDERS.keys())
+    p_keys = ["ollama", "openrouter"] + [p for p in PROVIDERS if p not in ("ollama", "openrouter")]
     table = Table(show_header=True, header_style="bold #7aa2f7")
     table.add_column("#", style="bold #e0af68", width=3)
     table.add_column("Provider", style="bold", width=16)
@@ -305,19 +318,19 @@ def interactive_setup(provider=None, model=None):
     console.print(table)
     console.print()
 
-    selected_provider = provider
+    selected_provider = provider.lower().strip() if provider else None
     if selected_provider and selected_provider.lower() in ("nvidia", "nim"):
         selected_provider = "nvidia"
 
     if not selected_provider:
         while True:
             try:
-                choice = input(f"Select provider [1-{len(p_keys)}] (default 1: NVIDIA NIM): ").strip()
+                choice = input(f"Select provider [1-{len(p_keys)}] (default 1: Ollama): ").strip()
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[red]Setup cancelled.[/]")
                 sys.exit(0)
             if not choice:
-                selected_provider = "nvidia"
+                selected_provider = "ollama"
                 break
             if choice.lower() in ("nvidia", "nim"):
                 selected_provider = "nvidia"
@@ -340,7 +353,7 @@ def interactive_setup(provider=None, model=None):
     if selected_provider == "custom":
         try:
             base_url = input("Enter OpenAI-compatible BASE_URL: ").strip()
-            api_key = input("Enter API key: ").strip()
+            api_key = getpass("Enter API key: ").strip()
         except (KeyboardInterrupt, EOFError):
             sys.exit(0)
     elif selected_provider == "ollama":
@@ -359,7 +372,7 @@ def interactive_setup(provider=None, model=None):
             else os.environ.get(p_info["env_key"], "")
         )
         if existing_key:
-            console.print(f"Found existing key in environment: [dim]{existing_key[:6]}...{existing_key[-4:]}[/]")
+            console.print("Found an existing API key in the environment.")
             try:
                 use_existing = input("Keep existing key? [Y/n]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
@@ -369,29 +382,40 @@ def interactive_setup(provider=None, model=None):
 
         if not api_key:
             try:
-                api_key = input(f"Enter your {p_info['name']} API key ({p_info['env_key']}): ").strip()
+                api_key = getpass(f"Enter your {p_info['name']} API key ({p_info['env_key']}): ").strip()
             except (KeyboardInterrupt, EOFError):
                 sys.exit(0)
             while not api_key:
                 console.print("[red]API key cannot be empty.[/]")
                 try:
-                    api_key = input(f"Enter your {p_info['name']} API key: ").strip()
+                    api_key = getpass(f"Enter your {p_info['name']} API key: ").strip()
                 except (KeyboardInterrupt, EOFError):
                     sys.exit(0)
 
+    # Query the selected provider, rather than suggesting uninstalled models.
+    configure(provider=selected_provider, api_key=api_key, base_url=base_url)
+    from .models import available_models
+    try:
+        model_options = list(available_models())
+    except Exception as err:
+        console.print(f"Could not list models: {err}", markup=False)
+        model_options = []
     # Prompt Model
     chosen_model = model
     if not chosen_model:
-        default_m = p_info["default_model"]
-        if p_info["models"]:
-            console.print("\nRecommended models:")
-            for m in p_info["models"]:
-                console.print(f"  · {m}")
+        default_m = MODEL if MODEL in model_options else (model_options[0] if model_options else MODEL)
+        if model_options:
+            console.print("\nAvailable models (enter a number or model ID):")
+            for i, m in enumerate(model_options, 1):
+                console.print(f"  {i}. {m}", markup=False)
         try:
             m_input = input(f"\nEnter model [default: {default_m}]: ").strip()
         except (KeyboardInterrupt, EOFError):
             sys.exit(0)
-        chosen_model = m_input if m_input else default_m
+        if m_input.isdigit() and 1 <= int(m_input) <= len(model_options):
+            chosen_model = model_options[int(m_input) - 1]
+        else:
+            chosen_model = m_input if m_input else default_m
 
     # Ask to save to .env
     try:
@@ -407,6 +431,9 @@ def interactive_setup(provider=None, model=None):
         else:
             save_env_var(p_info["env_key"], api_key)
         save_env_var("MODEL", chosen_model)
+        save_env_var(f"{selected_provider.upper()}_MODEL", chosen_model)
+        if selected_provider == "ollama":
+            save_env_var("OLLAMA_BASE_URL", BASE_URL)
         console.print(f"[bold #9ece6a]Saved configuration to {PROJECT_ENV}[/]")
 
     # Set in os.environ for immediate use
@@ -417,6 +444,9 @@ def interactive_setup(provider=None, model=None):
     else:
         os.environ[p_info["env_key"]] = api_key
     os.environ["MODEL"] = chosen_model
+    os.environ[f"{selected_provider.upper()}_MODEL"] = chosen_model
+    if selected_provider == "ollama":
+        os.environ["OLLAMA_BASE_URL"] = BASE_URL
 
     configure(
         provider=selected_provider,

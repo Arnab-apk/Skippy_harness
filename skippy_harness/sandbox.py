@@ -57,10 +57,22 @@ def name():
 def run(command, timeout=60):
     """Run a command, sandboxed when the OS lets us."""
     sandboxed = wrap(command)
+    invocation = sandboxed or command
+    if sys.platform == "win32":
+        executable = shutil.which("pwsh") or shutil.which("powershell")
+        if not executable:
+            raise RuntimeError("PowerShell was not found. Install PowerShell to run shell tools on Windows.")
+        script = ("$ErrorActionPreference = 'Stop'\n"
+                  "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding\n"
+                  + command + "\nif ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }")
+        invocation = [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script]
     return subprocess.run(
-        sandboxed or command,
-        shell=sandboxed is None,
+        invocation,
+        shell=sandboxed is None and sys.platform != "win32",
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=PROJECT,
         timeout=timeout,
     )

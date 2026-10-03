@@ -11,7 +11,7 @@ and every trim costs the whole prompt cache.
 
 from . import config
 from .history import estimate, strip
-from .llm import client
+from .llm import call_llm
 
 SYSTEM_PROMPT = """
 You are compacting the transcript of a coding session. The session is out of
@@ -78,14 +78,13 @@ def render(messages):
 
 def summarize(messages):
     """One LLM call, no tools. Returns the handoff note."""
-    response = client.chat.completions.create(
-        model=config.MODEL,
-        messages=[
+    message, _ = call_llm([
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": render(messages)},
-        ],
-    )
-    return response.choices[0].message.content
+        ], tools=[])
+    if not message.content:
+        raise ValueError("Compaction returned an empty summary; keeping the transcript.")
+    return message.content
 
 
 def safe_boundary(messages, start):

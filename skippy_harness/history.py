@@ -37,7 +37,7 @@ SPILLS = []  # temp files belonging to the current turn
 def spill(text):
     """Park the full output on disk for the rest of this turn."""
     handle = tempfile.NamedTemporaryFile(
-        mode="w", prefix="skippy_harness-", suffix=".txt", delete=False
+        mode="w", encoding="utf-8", prefix="skippy_harness-", suffix=".txt", delete=False
     )
     handle.write(text)
     handle.close()
@@ -66,7 +66,10 @@ def cap(text):
 def sweep():
     """Delete this turn's temp files. Their paths die with the tool results."""
     for path in SPILLS:
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass  # A locked spill must not take down the coding session.
     SPILLS.clear()
 
 
@@ -92,7 +95,9 @@ def strip(messages):
     shrunk = 0
     for message in messages[locked(messages):]:
         content = message.get("content") or ""
-        if message["role"] != "tool" or TRIMMED in content or len(content) <= STUB:
+        if (message["role"] != "tool" or len(content) <= STUB
+                or (len(content) < STUB + 200 and TRIMMED in content
+                    and content.endswith("Run the command again if you need them.]"))):
             continue
 
         message["content"] = (
@@ -121,7 +126,7 @@ def fit(messages):
     for message in messages[locked(messages):]:
         if estimate(messages) <= budget:
             break
-        if message["role"] == "tool" and TRIMMED not in (message.get("content") or ""):
+        if message["role"] == "tool" and len(message.get("content") or "") > len(TRIMMED) + 50:
             message["content"] = f"{TRIMMED} dropped to fit the context window.]"
             dropped += 1
     return dropped
