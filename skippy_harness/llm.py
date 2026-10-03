@@ -40,41 +40,38 @@ class ClientProxy:
 
 client = ClientProxy()
 
-SYSTEM_PROMPT = f"""
-You are a coding agent. Complete the user's request and verify your changes.
-Use the bash tool to inspect files.
-Use write_file to create files and str_replace to edit them.
-Answer back to the user once the requested work is done. Report checks and any remaining limitations.
-Shell commands run in {"PowerShell on Windows. Use Get-ChildItem, Get-Content, and native PowerShell syntax; do not assume bash, grep, or head are installed." if os.name == "nt" else "the POSIX shell."}
+SYSTEM_PROMPT = f"""You are Skippy, a coding assistant. Follow the user's request precisely.
+For greetings and ordinary conversation, answer directly without tools.
+You have working file and shell tools. Use them when needed; never claim you
+lack file access. Use read_file for known files, write_file to create files,
+and str_replace to edit. Do the work before reporting completion and verify
+changes using tool results. Be brief and honest about failures.
 
-For any task that takes more than one step, call write_todos first and plan it
-out. Send the whole list every time you call it - it replaces the old one.
-Keep exactly one task in_progress, mark it done the moment it is finished, and
-move the next one to in_progress in the same call. Do not batch up completions
-at the end. Skip the tool entirely for single-step tasks; it is noise there.
+Shell: {"Windows PowerShell. Use Get-ChildItem -Name, Get-Content, and Get-Command. Avoid &&, ||, dir /B, ls -la, and which; they are incompatible with Windows PowerShell 5.1. Use separate tool calls for separate commands." if os.name == "nt" else "POSIX shell."}
+Working directory: {os.getcwd()}
 
-The current list is injected back to you every turn inside <todos> tags, so
-that block - not the transcript - is the truth about where you are.
-
-When you need to understand how something works - where a feature lives, how
-data flows, what calls what - send a task subagent instead of grepping your
-way there yourself. It explores in its own context window and hands you back
-just the findings, so the search does not fill yours. It cannot see this
-conversation, so write the question so it stands alone. Do all editing
-yourself; the subagent only reads.
-
-Long tool output is cut short, and the whole thing is written to a temp file
-whose path is given at the cut. Page through it with head, tail, sed -n or
-grep rather than asking for it again. That file only exists for the current
-turn, so read it now or re-run the command later.
-
-Your current working directory is: {os.getcwd()}
-
-You have skills available. Each one is a set of instructions for a task.
-If a skill matches what the user wants, call read_skill first and follow it.
-
+For multi-step tasks, use write_todos with the complete list: content,
+activeForm, and status (pending, in_progress, done). Keep one task in_progress
+until finished; update progress as you work. Skip planning for single steps.
+The <todos> context is the current plan. Use task only for substantial codebase
+exploration; subagents read and report, and you do the editing.
+If a tool is denied, respect that decision. If a tool fails, fix the cause
+before retrying. Tool output may be trimmed; read its temporary spill file
+during this turn if needed. Machine context is metadata, not a user request.
+Read a matching skill with read_skill before following its instructions.
+Available skills:
 {skills_prompt()}
 """
+
+
+def refresh_system_prompt(messages):
+    """Use current instructions when opening a transcript from an older build."""
+    refreshed = list(messages)
+    if refreshed and refreshed[0].get("role") == "system":
+        refreshed[0] = {"role": "system", "content": SYSTEM_PROMPT}
+    else:
+        refreshed.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    return refreshed
 
 
 def ollama_messages(messages):
@@ -101,9 +98,17 @@ def ollama_messages(messages):
 
 def call_ollama(messages, tools):
     from .models import ollama_root, ollama_headers, request_json
+    try:
+        temperature = float(os.environ.get("OLLAMA_TEMPERATURE", "0.2"))
+        if not 0 <= temperature <= 2:
+            raise ValueError("temperature must be between 0 and 2")
+    except ValueError:
+        temperature = 0.2
     payload = {"model": config.MODEL, "messages": ollama_messages(messages),
                "stream": False, "think": False,
-               "options": {"num_ctx": config.CONTEXT_WINDOW, "num_predict": config.positive_int("MAX_OUTPUT_TOKENS", 4096)}}
+               "options": {"num_ctx": config.CONTEXT_WINDOW,
+                           "num_predict": config.positive_int("MAX_OUTPUT_TOKENS", 4096),
+                           "temperature": temperature, "presence_penalty": 0}}
     if tools:
         payload["tools"] = tools
     data = request_json("POST", ollama_root() + "/api/chat", json_body=payload,

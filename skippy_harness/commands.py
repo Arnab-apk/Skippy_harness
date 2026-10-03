@@ -63,6 +63,10 @@ def sessions(messages):
         return messages
 
     restored = session.open_session(saved[choice]["id"])
+    refreshed = llm.refresh_system_prompt(restored)
+    if refreshed != restored:
+        session.compacted(refreshed)
+        restored = refreshed
     return redraw(restored, "opened")
 
 

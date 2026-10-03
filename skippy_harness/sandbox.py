@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import re
 from pathlib import Path
 
 PROJECT = Path.cwd().resolve()
@@ -54,8 +55,44 @@ def name():
     return "none"
 
 
+def command_error(command):
+    """Explain common incompatible commands before asking to execute them."""
+    if sys.platform != "win32":
+        return None
+    # Ignore quoted strings and PowerShell backtick escapes. Never rewrite a
+    # compound command: changing its separators could change its meaning.
+    visible, quote, escaped = [], None, False
+    for char in command:
+        if escaped:
+            visible.append(" ")
+            escaped = False
+        elif char == "`":
+            escaped = True
+            visible.append(" ")
+        elif quote:
+            if char == quote:
+                quote = None
+            visible.append(" ")
+        elif char in "\"'":
+            quote = char
+            visible.append(" ")
+        else:
+            visible.append(char)
+    unquoted = "".join(visible)
+    if ("&&" in unquoted or "||" in unquoted) and not shutil.which("pwsh"):
+        return "Windows PowerShell 5.1 does not support && or ||. Run separate bash tool calls, or use native PowerShell control flow."
+    if re.search(r"(?:^|[;|&])\s*(?:ls|dir)\s+(?:-(?:la|al|l|a|lh|lah|alh)|/[bBsS])(?:\s|$)", unquoted):
+        return "This shell is PowerShell, not bash or cmd. Use Get-ChildItem -Name to list filenames or Get-ChildItem -Force to include hidden files."
+    if re.search(r"(?:^|[;|&])\s*which(?:\s|$)", unquoted):
+        return "Use Get-Command <program> to find a program in Windows PowerShell."
+    return None
+
+
 def run(command, timeout=60):
     """Run a command, sandboxed when the OS lets us."""
+    error = command_error(command)
+    if error:
+        return subprocess.CompletedProcess(command, 1, "", error)
     sandboxed = wrap(command)
     invocation = sandboxed or command
     if sys.platform == "win32":

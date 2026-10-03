@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import stat
 import tempfile
+import re
 
 from . import history
 from . import sandbox
@@ -118,6 +119,10 @@ def execute(tool_call, allowed_names=None, read_only=False):
             return args, f"Error: {key} for {name} must be a {prop['type']}."
 
     try:
+        if name == "bash":
+            error = sandbox.command_error(args["command"])
+            if error:
+                return args, "Error: " + error
         action, reason = check(name, args)
         if read_only and (name in ("write_file", "str_replace", "write_todos", "task") or action != "allow"):
             return args, "Blocked by policy: exploration subagents may only use approved read-only tools."
@@ -237,3 +242,11 @@ TOOLS = {
     "write_todos": write_todos,
     "task": task,
 }
+
+
+def failed_result(result):
+    """Tool errors stay in the transcript; repeated ones must not loop forever."""
+    match = re.match(r"Exit code: (-?\d+)", result)
+    if match:
+        return int(match[1]) != 0
+    return result.startswith(("Error:", "Blocked by policy:", "Timed out", "Interrupted before", "No skill named", "(stopped after"))

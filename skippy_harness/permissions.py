@@ -17,6 +17,8 @@ BASH_RULES = {
     # read-only: let them through
     "ls": "allow",
     "ls *": "allow",
+    "dir": "allow",
+    "dir *": "allow",
     "pwd": "allow",
     "cd *": "allow",
     "echo *": "allow",
@@ -54,6 +56,8 @@ BASH_RULES = {
     "Get-ChildItem *": "allow",
     "Get-Content *": "allow",
     "Get-Location": "allow",
+    "Get-Command": "allow",
+    "Get-Command *": "allow",
     "Select-String *": "allow",
     "Test-Path *": "allow",
     # risky: never, even if the user says yes

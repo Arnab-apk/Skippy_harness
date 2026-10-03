@@ -203,5 +203,8 @@ Optional `.env` settings:
 | `LLM_TIMEOUT` | 300 seconds for Ollama; 180 otherwise | Inference timeout |
 | `MAX_OUTPUT_TOKENS` | 4096 | Completion limit for Ollama and OpenRouter |
 | `MAX_AGENT_STEPS` | 50 | Maximum model/tool iterations per user turn |
+| `OLLAMA_TEMPERATURE` | 0.2 | Local sampling temperature (0 to 2); repetition pressure is disabled for coding |
 
 Ollama uses its [native chat API](https://docs.ollama.com/api/chat), passing the configured context size as `options.num_ctx`. OpenRouter discovery uses its [model catalogue](https://openrouter.ai/docs/api/api-reference/models/get-models) and filters for tool support. Backend discovery needs the model server/provider connection; file and shell tools remain subject to the harness permission layer.
+
+Machine metadata is attached to system context so the latest user request remains intact. Greetings do not require tools. On Windows, incompatible shell syntax gets a PowerShell hint before permission is requested. Denying a tool stops the current turn and skips the rest of that tool batch. Resumed sessions use the current system instructions.

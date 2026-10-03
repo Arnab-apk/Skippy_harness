@@ -10,7 +10,7 @@ TODOS = []  # [{"content": ..., "activeForm": ..., "status": ...}]
 def write_todos(todos):
     """Replace the whole list. Exactly one task may be in_progress."""
     if not isinstance(todos, list) or any(
-        not isinstance(t, dict) or t.get("status") not in MARKS
+        not isinstance(t, dict) or not isinstance(t.get("status"), str) or t.get("status") not in MARKS
         or not isinstance(t.get("content"), str) or not isinstance(t.get("activeForm"), str)
         for t in todos
     ):
@@ -33,7 +33,7 @@ def restore(messages, initial=None):
             if call["function"]["name"] != "write_todos":
                 continue
             result = results.get(call["id"], "Error:")
-            if result.startswith(("Error:", "Blocked", "The user denied", "Interrupted")):
+            if result.startswith(("Error:", "Blocked", "The user denied", "Interrupted", "Skipped:")):
                 continue
             try:
                 write_todos(json.loads(call["function"]["arguments"])["todos"])

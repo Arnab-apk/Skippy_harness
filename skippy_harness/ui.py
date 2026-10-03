@@ -407,6 +407,7 @@ class UI:
         for prefix, status in (("Error:", "error"), ("Blocked by policy", "blocked"),
                                ("The user denied", "denied"), ("Timed out", "timeout"),
                                ("Interrupted before", "interrupted"), ("No skill named", "missing"),
+                               ("Skipped:", "skipped"),
                                ("(stopped after", "incomplete")):
             if result.startswith(prefix):
                 return True, status

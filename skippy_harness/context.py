@@ -1,8 +1,4 @@
-"""Late injection: a small block appended just before we send.
-
-It goes at the END of the message list so the stable prefix in front of it
-stays cached.
-"""
+"""Machine context, kept separate from the user's actual request."""
 
 import hashlib
 import subprocess
@@ -65,9 +61,9 @@ def todos_note():
 
 
 def reminder():
-    """The block we append to the messages on every turn."""
+    """Current metadata, not an additional user message."""
     return {
-        "role": "user",
+        "role": "system",
         "content": (
             "<env>\n"
             f"time: {datetime.now():%Y-%m-%d %H:%M}\n"
@@ -75,3 +71,20 @@ def reminder():
             "</env>" + todos_note() + changes_note()
         ),
     }
+
+
+def prepare_messages(messages, injection):
+    """Merge metadata into a copy of the system message for this request.
+
+    A trailing synthetic user turn confused local models into responding to
+    the environment instead of the user. Keep tool/result ordering and the
+    original transcript intact, with a single system message for templates
+    that only support a system message at the beginning.
+    """
+    prepared = list(messages)
+    metadata = "\n\nMachine context (metadata, not a user request):\n" + injection["content"]
+    if prepared and prepared[0].get("role") == "system":
+        prepared[0] = {**prepared[0], "content": (prepared[0].get("content") or "") + metadata}
+    else:
+        prepared.insert(0, {"role": "system", "content": metadata})
+    return prepared

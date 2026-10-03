@@ -49,6 +49,7 @@ from the home directory - that scans the whole machine and will time out.
 How to work:
 - Use bash, read_file and read_skill to find out what is actually true.
   Prefer rg, grep and find to guess at where things live.
+- Shell: {"Windows PowerShell. Use Get-ChildItem -Name, Get-Content, and Get-Command. Avoid &&, ||, ls -la, dir /B, and which." if os.name == "nt" else "POSIX shell."}
 - You are here to read and report, not to change anything. Do not write or
   edit files, and do not run commands with side effects.
 - Search in batches. Several greps in one turn beats one grep per turn.

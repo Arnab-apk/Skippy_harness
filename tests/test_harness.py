@@ -12,7 +12,7 @@ from openai.types.chat import ChatCompletionMessage
 
 from skippy_harness import agent, commands, compact, config, history, llm, models
 from skippy_harness import permissions, sandbox, session, skills, subagent, todos
-from skippy_harness import tools, prompt
+from skippy_harness import tools, prompt, context
 from rich.console import Console
 from prompt_toolkit.document import Document
 from skippy_harness.ui import UI
@@ -416,8 +416,57 @@ class HarnessTests(unittest.TestCase):
              patch.object(agent, "reminder", return_value={"role":"user", "content":"env"}):
             agent.main()
         self.assertEqual(target.read_text(), "verified")
-        self.assertEqual(seen[1][-2]["role"], "tool")
-        self.assertIn("Wrote", seen[1][-2]["content"])
+        self.assertEqual(seen[1][-1]["role"], "tool")
+        self.assertIn("Wrote", seen[1][-1]["content"])
+
+    def test_machine_context_does_not_replace_user_request_or_mutate_history(self):
+        messages = [{"role":"system", "content":"instructions"}, {"role":"user", "content":"hello"}]
+        prepared = context.prepare_messages(messages, {"content":"branch: main"})
+        self.assertEqual(prepared[-1], {"role":"user", "content":"hello"})
+        self.assertIn("branch: main", prepared[0]["content"])
+        self.assertEqual(messages[0]["content"], "instructions")
+        self.assertEqual(sum(m["role"] == "user" for m in prepared), 1)
+
+    def test_old_session_uses_current_system_prompt(self):
+        messages = [{"role":"system", "content":"Always code, even for hello"}, {"role":"user", "content":"hello"}]
+        refreshed = llm.refresh_system_prompt(messages)
+        self.assertEqual(refreshed[0]["content"], llm.SYSTEM_PROMPT)
+        self.assertEqual(refreshed[1:], messages[1:])
+        self.assertEqual(messages[0]["content"], "Always code, even for hello")
+
+    def test_invalid_powershell_commands_fail_before_permission_prompt(self):
+        with patch.object(sandbox.sys, "platform", "win32"), patch.object(sandbox.shutil, "which", return_value=None), patch("skippy_harness.ui.ui.approve") as approve:
+            for command in ["cd project && dir /B", "ls -la", "dir /B", "which git"]:
+                with self.subTest(command=command):
+                    result = tools.execute(call("bash", {"command":command}))[1]
+                    self.assertTrue(result.startswith("Error:"))
+            approve.assert_not_called()
+            self.assertIsNone(sandbox.command_error('Write-Output "example && quoted"'))
+            self.assertIsNone(sandbox.command_error("Get-ChildItem -Name"))
+
+    def test_readonly_windows_aliases_do_not_require_approval(self):
+        for command in ["dir", "dir *", "Get-ChildItem -Name", "Get-Command git"]:
+            self.assertEqual(permissions.decide(command), "allow")
+
+    def test_denied_tool_stops_turn_and_skips_rest_of_batch(self):
+        config.configure(provider="ollama", model="local:2b")
+        fake_ui = MagicMock()
+        fake_ui.ask.side_effect = ["run two commands", None]
+        fake_ui.working.side_effect = lambda _: nullcontext()
+        message = assistant_call("bash", {"command":"python script.py"}, "first")
+        message["tool_calls"] += assistant_call("write_file", {"path":"unwanted.txt", "content":"oops"}, "second")["tool_calls"]
+        first = ChatCompletionMessage.model_validate(message)
+        with patch("sys.argv", ["skippy"]), patch.object(agent, "ui", fake_ui), \
+             patch.object(models, "validate_model", return_value="local:2b"), \
+             patch.object(agent, "call_llm", return_value=(first, {"prompt_tokens":100})) as llm_call, \
+             patch.object(agent, "execute", return_value=({}, "The user denied this tool call.")) as execute, \
+             patch.object(agent, "reminder", return_value={"content":"env"}):
+            agent.main()
+        llm_call.assert_called_once()
+        execute.assert_called_once()
+        results = [m for m in session.load("test") if m["role"] == "tool"]
+        self.assertEqual(len(results), 2)
+        self.assertTrue(results[-1]["content"].startswith("Skipped:"))
 
 
 if __name__ == "__main__":

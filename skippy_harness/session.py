@@ -19,19 +19,26 @@ def path_for(session_id):
 def save(messages):
     """Append what is new. Never rewrite what is already on disk."""
     global WRITTEN
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    with path_for(CURRENT).open("a", encoding="utf-8") as f:
-        for message in messages[WRITTEN:]:
-            f.write(json.dumps(message) + "\n")
+    append_entries(messages[WRITTEN:])
     WRITTEN = len(messages)
+
+
+def append_entries(entries):
+    """Keep a torn final JSON line from swallowing the next journal entry."""
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    with path_for(CURRENT).open("ab+") as stream:
+        if stream.tell():
+            stream.seek(-1, 2)
+            if stream.read(1) != b"\n":
+                stream.write(b"\n")
+        for entry in entries:
+            stream.write((json.dumps(entry) + "\n").encode("utf-8"))
 
 
 def rewind_to(count):
     """Record a rewind as an entry, so the old messages stay in the file."""
     global WRITTEN
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    with path_for(CURRENT).open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"rewind_to": count}) + "\n")
+    append_entries([{"rewind_to": count}])
     WRITTEN = count
 
 
@@ -39,10 +46,8 @@ def compacted(messages):
     """Compaction rewrites history, so record the result and start from it."""
     global WRITTEN, BASE_TODOS
     from .todos import TODOS
+    append_entries([{"compacted": messages, "todos": TODOS}])
     BASE_TODOS = json.loads(json.dumps(TODOS))
-    SESSION_DIR.mkdir(parents=True, exist_ok=True)
-    with path_for(CURRENT).open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"compacted": messages, "todos": TODOS}) + "\n")
     WRITTEN = len(messages)
 
 
