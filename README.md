@@ -159,12 +159,17 @@ During a session, you can use built-in slash commands:
 - `/provider ollama` / `/provider openrouter` - Switch directly to that provider
 - `/model [name]` - View current model, choose from recommendations, or set a custom model
 - `/compact` - Manually trigger context compaction
+- `/tools` or `Ctrl+O` - Expand/collapse tool details; Ctrl+O preserves your unfinished prompt
 - `/sessions` - List and resume previous chat sessions
 - `/rewind` - Select a user turn and rewind the conversation to before it
 - `/rewind n` - Remove the last `n` user turns from the conversation
 - `/help` - Show all available commands
 - `Alt+Enter` / `Opt+Enter` - Insert a newline in prompt
 - `Ctrl+D` - Exit the agent session
+
+Tool calls use compact rows with commands or relative file paths, success/error status, and short output previews. Edits show a small colored diff; writes show the path and line count. Expand with `/tools` to inspect recent output. Full results stay available to the model and session logs; the UI keeps the last 200 tool results for expansion even after in-memory history is shortened. Older or resumed results may already be trimmed by context management.
+
+Startup shows a colored ASCII Skippy wordmark with a small-terminal fallback. Repeated environment reminders, per-request token diagnostics, and raw responses are displayed with `--debug`.
 
 ---
 

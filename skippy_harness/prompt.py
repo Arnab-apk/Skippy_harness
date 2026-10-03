@@ -10,6 +10,8 @@ from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -19,6 +21,16 @@ HISTORY = Path.home() / ".agents" / "history"
 STYLE = Style.from_dict({"prompt": "bold #9ece6a"})
 
 bindings = KeyBindings()
+ACTIVE_PROMPT = None
+DRAFT = None
+
+
+@bindings.add("c-o", filter=Condition(lambda: ACTIVE_PROMPT == "> "))
+def _toggle_tools(event):
+    """Request a redraw while preserving any unfinished chat input."""
+    global DRAFT
+    DRAFT = event.current_buffer.document
+    event.app.exit(result="/tools")
 
 
 # macOS sends option-arrow as escape then arrow. Terminals configured to send
@@ -50,7 +62,7 @@ SESSION = None
 
 def read(prompt="> "):
     """Read one message. Raises EOFError on ctrl-d, like input() does."""
-    global SESSION
+    global SESSION, ACTIVE_PROMPT, DRAFT
     if SESSION is None:
         HISTORY.parent.mkdir(parents=True, exist_ok=True)
         SESSION = PromptSession(
@@ -58,4 +70,11 @@ def read(prompt="> "):
             key_bindings=bindings,
             style=STYLE,
         )
-    return SESSION.prompt(HTML(f"<prompt>{prompt}</prompt>"))
+    default = DRAFT if prompt == "> " and DRAFT is not None else Document("")
+    if prompt == "> ":
+        DRAFT = None
+    ACTIVE_PROMPT = prompt
+    try:
+        return SESSION.prompt(HTML(f"<prompt>{prompt}</prompt>"), default=default)
+    finally:
+        ACTIVE_PROMPT = None

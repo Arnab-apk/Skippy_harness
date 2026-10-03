@@ -210,6 +210,10 @@ class UI:
         color = ERROR if failed else USER
         label = TOOL_LABELS.get(name, name)
         detail = self._tool_detail(name, args)
+        if not (self.tools_expanded or self.verbose):
+            detail_text = Text(detail)
+            detail_text.truncate(max(8, self.console.width - len(label) - len(status) - (6 if nested else 2) - 12), overflow="ellipsis")
+            detail = detail_text.plain
         header = Text.assemble(("! " if failed else "+ ", color),
                                (label, f"bold {TOOL}"), (f"  {detail}", OUTPUT),
                                (f"  [{status}]", color))
@@ -272,6 +276,13 @@ class UI:
 
     @contextmanager
     def executing(self, name, args):
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except (ValueError, TypeError):
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
         if name == "task":  # Its own loop renders a spinner.
             yield
         else:

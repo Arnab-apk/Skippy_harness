@@ -116,8 +116,9 @@ def task(description: str) -> str:
             # The same executor the main loop uses, so the same permission
             # rules and the same sandbox apply. A subagent is a second caller,
             # not a privileged one - it is not a way around any of that.
-            args, result = execute(tool_call, allowed_names={s["function"]["name"] for s in toolset()}, read_only=True)
-            ui.tool(tool_call.function.name, args, result, nested=True)
+            with ui.executing(tool_call.function.name, tool_call.function.arguments):
+                args, result = execute(tool_call, allowed_names={s["function"]["name"] for s in toolset()}, read_only=True)
+            ui.tool(tool_call.function.name, args, result, nested=True, call_id=tool_call.id)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,

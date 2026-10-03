@@ -15,6 +15,7 @@ COMMANDS = {
     "/rewind": "jump back to an earlier point in this chat",
     "/sessions": "open a past chat",
     "/compact": "summarise the history so far and free up the context window",
+    "/tools": "expand or collapse tool details (also Ctrl+O)",
     "/help": "list all available commands",
 }
 
@@ -28,7 +29,7 @@ def preview(message):
 def redraw(messages, label):
     """The screen no longer matches the history, so wipe it and draw again."""
     ui.clear()
-    ui.banner(sandbox.name(), config.ACTIVE_PROVIDER, config.MODEL)
+    ui.banner(sandbox.name(), config.ACTIVE_PROVIDER, config.MODEL, art=False)
     ui.resumed(messages, label)
     ui.replay(messages)
     return messages
@@ -207,6 +208,8 @@ def handle(command, messages):
         return switch_provider(messages, parts[1] if len(parts) > 1 else None)
     if cmd_lower == "/model":
         return switch_model(command, messages)
+    if cmd_lower == "/tools":
+        return redraw(messages, ui.toggle_tools())
     if cmd_lower in ("/help", "/?"):
         ui.note("\n".join(f"{name:<12} -  {help_txt}" for name, help_txt in COMMANDS.items()))
         return messages

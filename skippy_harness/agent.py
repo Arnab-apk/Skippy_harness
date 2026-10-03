@@ -28,6 +28,7 @@ def main():
     parser.add_argument("--setup", action="store_true", help="run provider setup wizard")
     parser.add_argument("--check", action="store_true", help="check provider connection and model without starting chat")
     cli = parser.parse_args()
+    ui.verbose = cli.debug
 
     # Apply CLI selection before checking credentials for that provider.
     try:
@@ -126,7 +127,8 @@ def main():
                 break
 
             for tool_call in message.tool_calls:
-                args, result = execute(tool_call)
+                with ui.executing(tool_call.function.name, tool_call.function.arguments):
+                    args, result = execute(tool_call)
 
                 messages.append({
                     "role": "tool",
@@ -134,7 +136,7 @@ def main():
                     "content": result,
                 })
                 session.save(messages)
-                ui.tool(tool_call.function.name, args, result)
+                ui.tool(tool_call.function.name, args, result, call_id=tool_call.id)
         else:
             ui.note("Stopped at the agent step limit. Send another message to continue, or adjust MAX_AGENT_STEPS.")
 
