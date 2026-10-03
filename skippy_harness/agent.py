@@ -125,7 +125,6 @@ def main():
 
             for tool_call in message.tool_calls:
                 args, result = execute(tool_call)
-                ui.tool(tool_call.function.name, args, result)
 
                 messages.append({
                     "role": "tool",
@@ -133,6 +132,7 @@ def main():
                     "content": result,
                 })
                 session.save(messages)
+                ui.tool(tool_call.function.name, args, result)
         else:
             ui.note("Stopped at the agent step limit. Send another message to continue, or adjust MAX_AGENT_STEPS.")
 

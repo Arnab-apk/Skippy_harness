@@ -2,16 +2,52 @@
 
 A lightweight, modular, and extensible coding agent harness in Python built for autonomous terminal-driven pair programming.
 
+Ollama and OpenRouter are the primary supported backends. Model menus use live provider catalogues: Ollama lists installed models, and OpenRouter lists models with text output and tool support. Provider switching remembers a separate model for each backend and saves menu selections to `.env`.
+
+### Start with Ollama or OpenRouter
+
+```powershell
+uv run skippy --provider ollama
+```
+
+Start Ollama first and install a model with tool support. If the saved model is missing, Skippy opens the model picker. The picker uses **1-based numbering**, supports search text, and uses `n` / `p` to change pages. Enter cancels a menu; an empty chat prompt keeps the session open.
+
+For OpenRouter, set `OPENROUTER_API_KEY` in `.env`, then run:
+
+```powershell
+uv run skippy --provider openrouter
+```
+
+Inside chat:
+
+```text
+/provider ollama
+/provider openrouter
+/model
+/model qwen3.5:2b
+```
+
+Model IDs are provider-specific. An Ollama model must be installed and support tools; an OpenRouter model must appear in its current tool-capable catalogue. A valid OpenRouter key can still fail inference if its monthly spending limit or credits are exhausted; Skippy explains that error and lets you switch to Ollama.
+
+Check connectivity, installed/available model, and tool support without starting chat:
+
+```powershell
+uv run skippy --check
+uv run skippy --provider openrouter --model google/gemini-2.5-flash --check
+```
+
+`--check` checks metadata and OpenRouter authentication. It does not make a paid inference request or guarantee remaining inference allowance.
+
 ## Features
 
 - **Interactive Terminal Chat**: Powered by `prompt_toolkit` and `rich`, featuring multi-line input, history recall, and clean terminal rendering.
-- **Core Tooling**: File inspection, creation, and surgical text replacements (`str_replace`), plus sandboxed shell command execution (`bash`).
+- **Core Tooling**: UTF-8 file inspection, atomic file creation/replacement, and surgical text replacements (`str_replace`). Shell output includes the command's exit code. On Windows, the `bash` tool runs PowerShell; on macOS/Linux it runs the POSIX shell.
 - **Configurable LLM Backend**: Connects to any OpenAI-compatible API endpoint (OpenAI, DeepSeek, Ollama, OpenRouter, etc.).
-- **Permissions & OS Sandboxing**: Enforces write boundaries and prevents network access where supported (Seatbelt on macOS, Bubblewrap on Linux).
-- **Subagents**: Spawns isolated exploration subagents with separate context windows to search codebases without polluting the primary context.
+- **Permissions & OS Sandboxing**: File writes outside the project and shell commands with effects require approval. Seatbelt on macOS and Bubblewrap on Linux restrict shell writes/network where available. Windows and Linux without Bubblewrap have no OS sandbox; the permission checker is an approval mechanism, not a security boundary.
+- **Subagents**: Exploration subagents have separate message histories. The executor blocks write tools, recursive delegation, plan changes, and shell commands requiring approval.
 - **Skills System**: Dynamically loads custom capabilities and operational guides from `.agents/skills`.
 - **Todo & Task Planning**: Automatic multi-step task planning with `<todos>` injection into prompts for reliable execution.
-- **Session Management**: Full conversation persistence with `/sessions` to browse/resume previous chats and `/rewind` to roll back turns.
+- **Session Management**: Conversation logs are stored in `.skippy/sessions/`, ignored by Git. `/sessions` and `--resume` restore chats, plans, and interrupted tool batches. Older logs remain readable and are imported when opened. `/rewind` rolls back conversation turns; it does not undo file edits.
 - **Context Compaction**: Automated token budgeting and compaction to retain key context across long-running sessions, plus manual `/compact`.
 - **Git State Tracking**: Tracks git branch and automatically injects reminders about modified, added, or deleted files between turns.
 
@@ -106,6 +142,7 @@ uv run skippy
 - `--setup`: Launch the interactive provider configuration wizard
 - `--resume`: Automatically restore and continue your most recent session
 - `--debug`: Display raw model responses and token usage diagnostics
+- `--check`: Check provider connectivity, authentication, and selected model metadata without inference
 
 Examples:
 ```bash
@@ -119,10 +156,12 @@ uv run skippy --resume
 During a session, you can use built-in slash commands:
 
 - `/provider` - View active provider or switch between providers on the fly
+- `/provider ollama` / `/provider openrouter` - Switch directly to that provider
 - `/model [name]` - View current model, choose from recommendations, or set a custom model
 - `/compact` - Manually trigger context compaction
 - `/sessions` - List and resume previous chat sessions
-- `/rewind [n]` - Rewind conversation by `n` turns (default: 1)
+- `/rewind` - Select a user turn and rewind the conversation to before it
+- `/rewind n` - Remove the last `n` user turns from the conversation
 - `/help` - Show all available commands
 - `Alt+Enter` / `Opt+Enter` - Insert a newline in prompt
 - `Ctrl+D` - Exit the agent session
@@ -132,3 +171,32 @@ During a session, you can use built-in slash commands:
 ## License
 
 MIT
+
+## Validation and runtime settings
+
+Run the regression suite without extra test dependencies:
+
+```powershell
+uv run python -m unittest discover -s tests -v
+```
+
+Optional live coding smoke test (OpenRouter inference may incur charges):
+
+```powershell
+uv run python -m scripts.smoke_backend --provider ollama --model qwen3.5:2b
+```
+
+This asks the model to create, edit, and read a temporary file through the harness, then checks the actual contents.
+
+Optional `.env` settings:
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Saved Ollama endpoint; `OLLAMA_HOST` is also accepted |
+| `OLLAMA_MODEL` / `OPENROUTER_MODEL` | Provider default or picker selection | Separate saved model IDs |
+| `CONTEXT_WINDOW` | 8192 for Ollama; 128000 otherwise | Request budget; OpenRouter metadata can reduce it |
+| `LLM_TIMEOUT` | 300 seconds for Ollama; 180 otherwise | Inference timeout |
+| `MAX_OUTPUT_TOKENS` | 4096 | Completion limit for Ollama and OpenRouter |
+| `MAX_AGENT_STEPS` | 50 | Maximum model/tool iterations per user turn |
+
+Ollama uses its [native chat API](https://docs.ollama.com/api/chat), passing the configured context size as `options.num_ctx`. OpenRouter discovery uses its [model catalogue](https://openrouter.ai/docs/api/api-reference/models/get-models) and filters for tool support. Backend discovery needs the model server/provider connection; file and shell tools remain subject to the harness permission layer.

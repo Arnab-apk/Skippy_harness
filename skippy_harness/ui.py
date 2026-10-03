@@ -5,6 +5,8 @@ and dicts and decides how they look.
 """
 
 import json
+import os
+import sys
 from contextlib import contextmanager
 
 from rich.console import Console, Group
@@ -35,6 +37,13 @@ TODO_STYLES = {
 
 class UI:
     def __init__(self):
+        if os.name == "nt":
+            for stream in (sys.stdout, sys.stderr):
+                if hasattr(stream, "reconfigure"):
+                    try:
+                        stream.reconfigure(encoding="utf-8", errors="replace")
+                    except (OSError, ValueError):
+                        pass
         self.console = Console()
         self._totals = {}
 

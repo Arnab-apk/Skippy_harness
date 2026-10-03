@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+import io
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
@@ -41,6 +42,7 @@ class HarnessTests(unittest.TestCase):
             (session, "SESSION_DIR", self.root / "sessions"),
             (session, "LEGACY_DIR", self.root / "legacy"),
             (session, "CURRENT", "test"), (session, "WRITTEN", 0),
+            (session, "BASE_TODOS", []),
             (todos, "TODOS", []),
         ]:
             p = patch.object(obj, name, value)
@@ -140,6 +142,16 @@ class HarnessTests(unittest.TestCase):
         with patch.object(ui.console, "print"), patch("skippy_harness.ui.prompt.read", return_value="1"):
             self.assertEqual(ui.pick("pick", ["first", "second"]), 0)
 
+    @unittest.skipUnless(os.name == "nt", "Windows output encoding")
+    def test_windows_tool_output_supports_unicode(self):
+        buffer = io.BytesIO()
+        output = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch("sys.stdout", output):
+            ui = UI()
+            ui.tool("read_file", {"path":"sample"}, "Unicode: \u4e16\u754c")
+        output.flush()
+        self.assertIn("\u4e16\u754c".encode("utf-8"), buffer.getvalue())
+
     def test_menu_search_and_invalid_zero(self):
         ui = UI()
         with patch.object(ui.console, "print"), patch("skippy_harness.ui.prompt.read", side_effect=["0", "second", "2"]):
@@ -169,6 +181,20 @@ class HarnessTests(unittest.TestCase):
         converted = llm.ollama_messages(transcript)
         self.assertEqual(converted[0]["tool_calls"][0]["function"]["arguments"], {"path":"sample"})
         self.assertEqual(converted[1]["tool_name"], "read_file")
+
+    def test_native_ollama_survives_previous_invalid_arguments(self):
+        message = assistant_call("read_file", {})
+        message["tool_calls"][0]["function"]["arguments"] = "{broken"
+        converted = llm.ollama_messages([message, {"role":"tool", "tool_call_id":"test-call", "content":"Error: invalid JSON"}])
+        self.assertEqual(converted[0]["tool_calls"][0]["function"]["arguments"], {})
+
+    def test_openrouter_monthly_limit_error_explains_local_fallback(self):
+        config.configure(provider="openrouter")
+        fake = MagicMock()
+        fake.chat.completions.create.side_effect = RuntimeError("Key limit exceeded (monthly limit)")
+        with patch.object(llm, "get_client", return_value=fake):
+            with self.assertRaisesRegex(ValueError, "/provider ollama"):
+                llm.call_llm([{"role":"user", "content":"hello"}])
 
     def test_compaction_uses_active_backend_without_tools(self):
         with patch.object(compact, "call_llm", return_value=(SimpleNamespace(content="summary"), {})) as llm_call:
@@ -210,6 +236,20 @@ class HarnessTests(unittest.TestCase):
 
     def test_non_object_arguments_are_handled(self):
         self.assertIn("JSON object", tools.execute(call("read_file", []))[1])
+
+    def test_wrong_argument_types_do_not_truncate_existing_file(self):
+        target = self.root / "original.txt"
+        target.write_text("keep me", encoding="utf-8")
+        _, result = tools.execute(call("write_file", {"path":str(target), "content":5}))
+        self.assertIn("must be a string", result)
+        self.assertEqual(target.read_text(), "keep me")
+
+    def test_failed_atomic_write_preserves_original(self):
+        target = self.root / "original.txt"
+        target.write_text("keep me", encoding="utf-8")
+        with self.assertRaises(UnicodeEncodeError):
+            tools.write_file(str(target), "invalid surrogate \ud800")
+        self.assertEqual(target.read_text(), "keep me")
 
     def test_invalid_todos_do_not_corrupt_state(self):
         valid = [{"content":"work", "activeForm":"working", "status":"in_progress"}]
@@ -259,6 +299,11 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(session.load("test", repair_history=False), restored)
         session.save(restored + [{"role":"user", "content":"continue"}])
         self.assertEqual(len(session.load("test")), 4)
+
+    def test_session_ignores_corrupt_lines_and_non_messages(self):
+        session.SESSION_DIR.mkdir()
+        session.path_for("test").write_text('[]\n{}\n{broken\n'+json.dumps({"role":"user", "content":"valid"})+'\n', encoding="utf-8")
+        self.assertEqual(session.load("test"), [{"role":"user", "content":"valid"}])
 
     def test_legacy_session_import_preserves_original(self):
         session.LEGACY_DIR.mkdir()
