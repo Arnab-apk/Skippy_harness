@@ -1,0 +1,20 @@
+[project]
+name = "skippy_harness"
+version = "0.1.0"
+description = "A minimal coding agent harness"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=3.5.0",
+    "prompt-toolkit>=3.0.53",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+skippy = "skippy_harness.agent:main"
+skippy-harness = "skippy_harness.agent:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
