@@ -468,6 +468,121 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertTrue(results[-1]["content"].startswith("Skipped:"))
 
+    def run_mock_agent(self, replies, execute=None, inputs=None):
+        config.configure(provider="ollama", model="local:2b")
+        display = MagicMock()
+        display.ask.side_effect = inputs or ["do the task", None]
+        display.working.side_effect = lambda _: nullcontext()
+        display.executing.side_effect = lambda *args: nullcontext()
+        with patch("sys.argv", ["skippy"]), patch.object(agent, "ui", display), \
+             patch.object(models, "validate_model", return_value="local:2b"), \
+             patch.object(agent, "call_llm", side_effect=replies) as request, \
+             patch.object(agent, "execute", side_effect=execute) as run, \
+             patch.object(agent, "reminder", return_value={"content":"env"}):
+            agent.main()
+        return display, request, run
+
+    def test_failed_or_interrupted_request_saves_user_message(self):
+        for failure in [RuntimeError("server offline"), KeyboardInterrupt()]:
+            with self.subTest(failure=type(failure).__name__):
+                session.WRITTEN = 0
+                session.CURRENT = type(failure).__name__
+                self.run_mock_agent([failure])
+                self.assertEqual(session.load(session.CURRENT)[-1], {"role":"user", "content":"do the task"})
+
+    def test_repeated_failure_stops_before_a_fourth_retry(self):
+        replies = [(ChatCompletionMessage.model_validate(assistant_call("read_file", {"path":"missing"}, str(i))),
+                    {"prompt_tokens":100}) for i in range(4)]
+        display, request, execute = self.run_mock_agent(replies, execute=lambda _: ({"path":"missing"}, "Error: file missing"))
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(execute.call_count, 3)
+        self.assertTrue(any("three times" in str(c) for c in display.note.call_args_list))
+
+    def test_interrupted_tool_skips_batch_and_chat_continues(self):
+        batch = assistant_call("read_file", {"path":"first"}, "first")
+        batch["tool_calls"] += assistant_call("read_file", {"path":"second"}, "second")["tool_calls"]
+        replies = [(ChatCompletionMessage.model_validate(batch), {"prompt_tokens":100}),
+                   (ChatCompletionMessage(role="assistant", content="hello"), {"prompt_tokens":100})]
+        _, request, execute = self.run_mock_agent(replies, execute=[KeyboardInterrupt()], inputs=["inspect", "hello", None])
+        self.assertEqual(request.call_count, 2)
+        execute.assert_called_once()
+        messages = session.load("test", repair_history=False)
+        results = [m for m in messages if m["role"] == "tool"]
+        self.assertEqual([m["tool_call_id"] for m in results], ["first", "second"])
+        self.assertTrue(results[0]["content"].startswith("Interrupted"))
+        self.assertTrue(results[1]["content"].startswith("Skipped:"))
+        self.assertEqual(session.repair(messages), messages)
+        self.assertEqual(messages[-1]["content"], "hello")
+
+    def test_append_after_torn_session_line_preserves_next_message_and_rewind(self):
+        first = {"role":"user", "content":"first"}
+        session.save([first])
+        with session.path_for("test").open("ab") as stream:
+            stream.write(b'{"role":"assistant","content":"torn')
+        second = {"role":"user", "content":"second"}
+        session.save([first, second])
+        self.assertEqual(session.load("test"), [first, second])
+        session.rewind_to(1)
+        self.assertEqual(session.load("test"), [first])
+
+    def test_skipped_plan_is_not_restored_and_bad_status_is_handled(self):
+        plan = [{"content":"work", "activeForm":"working", "status":"in_progress"}]
+        todos.restore([assistant_call("write_todos", {"todos":plan}),
+                       {"role":"tool", "tool_call_id":"test-call", "content":"Skipped: stopped batch"}])
+        self.assertEqual(todos.TODOS, [])
+        plan[0]["status"] = []
+        self.assertTrue(todos.write_todos(plan).startswith("Error:"))
+
+    def test_compaction_preserves_latest_request_and_live_tool_results(self):
+        messages = [{"role":"system", "content":"sys"}, {"role":"user", "content":"older"},
+                    {"role":"assistant", "content":"old answer"}, {"role":"user", "content":"exact latest request"},
+                    assistant_call("read_file", {"path":"live.txt"}),
+                    {"role":"tool", "tool_call_id":"test-call", "content":"x"*20000}]
+        with patch.object(compact, "summarize", return_value="old handoff") as summarize:
+            config.CONTEXT_WINDOW = 8192
+            result = compact.compact(messages)
+        self.assertEqual(summarize.call_args.args[0], messages[1:3])
+        self.assertEqual(result[2:], messages[3:])
+        self.assertEqual(len(result[-1]["content"]), 20000)
+        self.assertEqual(session.repair(result), result)
+
+    def test_compaction_bounds_each_summary_request_including_unicode(self):
+        config.CONTEXT_WINDOW = 2048
+        seen = []
+        def summarizer(messages, tools):
+            seen.append(messages)
+            self.assertLessEqual(history.estimate(messages), config.CONTEXT_WINDOW * config.COMPACT_AT)
+            self.assertEqual(tools, [])
+            return SimpleNamespace(content="compact handoff"), {}
+        with patch.object(compact, "call_llm", side_effect=summarizer):
+            self.assertEqual(compact.summarize([{"role":"user", "content":"fact \u4e16\u754c "*3000}]), "compact handoff")
+        self.assertGreater(len(seen), 1)
+        self.assertIn("compact handoff", seen[1][1]["content"])
+        recovered = seen[0][1]["content"] + "".join(m[1]["content"].split("Next transcript segment:\n", 1)[1] for m in seen[1:])
+        self.assertEqual(recovered, compact.render([{"role":"user", "content":"fact \u4e16\u754c "*3000}]))
+
+    def test_interrupted_compaction_keeps_transcript_and_journal(self):
+        messages = [{"role":"system", "content":"sys"}, {"role":"user", "content":"keep"}]
+        session.save(messages)
+        with patch.object(commands, "ui"), patch.object(compact, "compact", side_effect=KeyboardInterrupt()):
+            self.assertIs(commands.compact(messages), messages)
+        self.assertEqual(session.load("test"), messages)
+
+    def test_exploration_refuses_oversize_request_without_calling_model(self):
+        config.CONTEXT_WINDOW = 200
+        with patch("skippy_harness.ui.ui"), patch.object(llm, "call_llm") as request:
+            self.assertTrue(subagent.task("x"*10000).startswith("Error:"))
+        request.assert_not_called()
+
+    def test_exploration_stops_repeated_failures(self):
+        replies = [(ChatCompletionMessage.model_validate(assistant_call("read_file", {"path":"missing"}, str(i))),
+                    {"prompt_tokens":100}) for i in range(4)]
+        with patch("skippy_harness.ui.ui"), patch.object(llm, "call_llm", side_effect=replies) as request, \
+             patch.object(tools, "execute", return_value=({"path":"missing"}, "Error: missing")) as execute:
+            self.assertIn("three times", subagent.task("inspect missing file"))
+        self.assertEqual(request.call_count, 3)
+        self.assertEqual(execute.call_count, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

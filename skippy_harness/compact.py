@@ -10,7 +10,7 @@ and every trim costs the whole prompt cache.
 """
 
 from . import config
-from .history import estimate, strip
+from .history import estimate
 from .llm import call_llm
 
 SYSTEM_PROMPT = """
@@ -77,14 +77,36 @@ def render(messages):
 
 
 def summarize(messages):
-    """One LLM call, no tools. Returns the handoff note."""
-    message, _ = call_llm([
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": render(messages)},
-        ], tools=[])
-    if not message.content:
-        raise ValueError("Compaction returned an empty summary; keeping the transcript.")
-    return message.content
+    """Summarize in bounded chunks, carrying earlier findings forward."""
+    remaining = render(messages)
+    summary = ""
+    budget = config.CONTEXT_WINDOW * config.COMPACT_AT
+    while remaining:
+        prefix = ("Previous handoff; preserve its relevant facts:\n" + summary +
+                  "\n\nNext transcript segment:\n") if summary else ""
+        def request(text):
+            return [{"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prefix + text}]
+
+        # Use the same JSON-based estimate as the caller, including escaped
+        # Unicode. Never send the overflowing transcript to a smaller model.
+        low, high = 0, len(remaining)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if estimate(request(remaining[:middle])) <= budget:
+                low = middle
+            else:
+                high = middle - 1
+        if not low:
+            raise ValueError("Context window is too small for compaction; keeping the transcript.")
+        message, _ = call_llm(request(remaining[:low]), tools=[])
+        if not message.content or not message.content.strip():
+            raise ValueError("Compaction returned an empty summary; keeping the transcript.")
+        summary = message.content
+        if estimate([{"role": "user", "content": HANDOFF.format(summary=summary)}]) > config.CONTEXT_WINDOW * config.COMPACT_TO:
+            raise ValueError("Compaction returned an oversized summary; keeping the transcript.")
+        remaining = remaining[low:]
+    return summary
 
 
 def safe_boundary(messages, start):
@@ -114,6 +136,12 @@ def tail_start(messages, budget):
 def compact(messages):
     """system + summary + a recent tail. The caller freezes what comes back."""
     cut = tail_start(messages, config.CONTEXT_WINDOW * config.COMPACT_TO)
+    # A budget boundary can land inside the current exchange. Keep the exact
+    # latest request and all its assistant/tool messages together.
+    latest_user = next((i for i in range(len(messages) - 1, 0, -1)
+                        if messages[i]["role"] == "user"
+                        and not (messages[i].get("content") or "").startswith("<summary>")), len(messages))
+    cut = min(cut, latest_user)
     if cut <= 1:
         return messages  # nothing old enough to be worth summarising
 
@@ -124,8 +152,5 @@ def compact(messages):
         *messages[cut:],
     ]
 
-    # Shrink the retained tail now, while we are already paying for a rebuilt
-    # prefix. Stripping is idempotent, so from here the frozen block is final
-    # and stays byte-identical - and cached - until the next compaction.
-    strip(kept)
+    # Live tool output remains available. The caller strips completed turns.
     return kept

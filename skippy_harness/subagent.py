@@ -19,6 +19,7 @@ Four rules, and the code below is really just these:
 """
 
 import os
+import json
 
 MAX_TURNS = 12  # a runaway explorer is worse than a missing answer
 
@@ -75,9 +76,10 @@ def task(description: str) -> str:
     """Run a fresh agent on one question and return only its final answer."""
     # Imported inside the function, not at the top: llm imports tools, and
     # tools imports us, so importing them up there would close the circle.
-    from .history import fit
+    from . import config
+    from .history import fit, estimate
     from .llm import call_llm
-    from .tools import execute
+    from .tools import execute, failed_result
     from .ui import ui
 
     # --- rule 1 ---
@@ -91,6 +93,9 @@ def task(description: str) -> str:
     ui.subagent(description)
 
     report = None  # newest thing it has said, kept in case we run out of turns
+    failures = {}
+    schemas = toolset()
+    allowed_names = {s["function"]["name"] for s in schemas}
 
     # --- rule 3 ---
     # Compare this with the inner loop in agent.py: call, append, run the
@@ -98,9 +103,11 @@ def task(description: str) -> str:
     # loop you already have, pointed at a different list of messages.
     for _ in range(MAX_TURNS):
         fit(messages)  # its context can overflow too, and nobody compacts it
+        if estimate(messages) + estimate(schemas) > config.CONTEXT_WINDOW * config.COMPACT_AT:
+            return "Error: exploration reached the context limit. Narrow the question before retrying."
 
         with ui.working("subagent exploring"):
-            message, usage = call_llm(messages, tools=toolset())
+            message, usage = call_llm(messages, tools=schemas)
 
         messages.append(message.model_dump(exclude_none=True))
         ui.usage(usage)
@@ -118,13 +125,20 @@ def task(description: str) -> str:
             # rules and the same sandbox apply. A subagent is a second caller,
             # not a privileged one - it is not a way around any of that.
             with ui.executing(tool_call.function.name, tool_call.function.arguments):
-                args, result = execute(tool_call, allowed_names={s["function"]["name"] for s in toolset()}, read_only=True)
+                args, result = execute(tool_call, allowed_names=allowed_names, read_only=True)
             ui.tool(tool_call.function.name, args, result, nested=True, call_id=tool_call.id)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
                 "content": result,
             })
+            key = (tool_call.function.name, json.dumps(args, sort_keys=True))
+            if failed_result(result):
+                failures[key] = failures.get(key, 0) + 1
+                if failures[key] >= 3:
+                    return "Error: exploration stopped after the same tool failed three times. Last result: " + result
+            else:
+                failures.pop(key, None)
 
     # Out of turns. Hand back whatever it last managed to say rather than
     # nothing at all - a partial finding still beats making the lead agent

@@ -75,6 +75,9 @@ def compact(messages):
     try:
         with ui.working("compacting"):
             compacted = compaction.compact(messages)
+    except KeyboardInterrupt:
+        ui.note("Interrupted compaction; your transcript is unchanged.")
+        return messages
     except Exception as failure:  # noqa: BLE001
         # Compaction is one more API call, and it fires when the window is
         # nearly full - the worst moment to lose the session over a rate limit.
