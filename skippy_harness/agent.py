@@ -29,6 +29,7 @@ def main():
     parser.add_argument("--check", action="store_true", help="check provider connection and model without starting chat")
     cli = parser.parse_args()
     ui.verbose = cli.debug
+    ui.tools_expanded = cli.debug
 
     # Apply CLI selection before checking credentials for that provider.
     try:

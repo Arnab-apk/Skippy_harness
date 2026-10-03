@@ -12,7 +12,9 @@ from openai.types.chat import ChatCompletionMessage
 
 from skippy_harness import agent, commands, compact, config, history, llm, models
 from skippy_harness import permissions, sandbox, session, skills, subagent, todos
-from skippy_harness import tools
+from skippy_harness import tools, prompt
+from rich.console import Console
+from prompt_toolkit.document import Document
 from skippy_harness.ui import UI
 
 
@@ -165,6 +167,50 @@ class HarnessTests(unittest.TestCase):
         ui = UI()
         with patch.object(ui.console, "print"), patch("skippy_harness.ui.prompt.read", side_effect=["0", "second", "2"]):
             self.assertEqual(ui.pick("pick", ["first", "second"]), 1)
+
+    def test_expanding_tools_keeps_output_after_history_is_trimmed(self):
+        output = io.StringIO()
+        ui = UI()
+        ui.console = Console(file=output, width=80, color_system=None)
+        result = "\n".join(f"line {i}" for i in range(40))
+        ui.tool("read_file", {"path":"sample"}, result, call_id="cached-call")
+        self.assertNotIn("line 39", output.getvalue())
+        output.seek(0)
+        output.truncate(0)
+        ui.toggle_tools()
+        ui.replay([assistant_call("read_file", {"path":"sample"}, "cached-call"),
+                   {"role":"tool", "tool_call_id":"cached-call", "content":"[output trimmed]"}])
+        self.assertIn("line 39", output.getvalue())
+
+    def test_compact_shell_failure_remains_visible(self):
+        output = io.StringIO()
+        ui = UI()
+        ui.console = Console(file=output, width=36, color_system=None)
+        ui.tool("bash", {"command":"python -m unittest discover -s tests -v"}, "Exit code: 7\nAssertionError: failed")
+        rendered = output.getvalue()
+        self.assertIn("[exit 7]", rendered)
+        self.assertIn("AssertionError", rendered)
+        self.assertNotIn("Exit code:", rendered)
+
+    def test_tool_toggle_preserves_input_and_cursor_through_other_prompts(self):
+        draft = Document("finish this task", cursor_position=6)
+        event = SimpleNamespace(current_buffer=SimpleNamespace(document=draft), app=MagicMock())
+        fake_session = MagicMock()
+        fake_session.prompt.return_value = "hello"
+        with patch.object(prompt, "DRAFT", None), patch.object(prompt, "SESSION", fake_session):
+            prompt._toggle_tools(event)
+            event.app.exit.assert_called_once_with(result="/tools")
+            prompt.read("allow? ")
+            self.assertEqual(prompt.DRAFT, draft)
+            prompt.read("> ")
+            self.assertEqual(fake_session.prompt.call_args.kwargs["default"], draft)
+            self.assertIsNone(prompt.DRAFT)
+
+    def test_tool_display_command_does_not_change_transcript(self):
+        messages = [{"role":"system", "content":"sys"}, {"role":"user", "content":"work"}]
+        with patch.object(commands, "ui") as display, patch.object(commands, "redraw", side_effect=lambda m, _:m):
+            self.assertIs(commands.handle("/tools", messages), messages)
+        display.toggle_tools.assert_called_once()
 
     def test_empty_tool_list_really_disables_tools(self):
         config.configure(provider="openrouter")

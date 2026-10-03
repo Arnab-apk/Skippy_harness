@@ -88,10 +88,15 @@ class UI:
             parts.append(model)
         parts.append(f"sandbox: {sandbox_name}")
         info_line = "  /  ".join(parts)
+        if self.console.width < 60:
+            info_line = " / ".join(parts[:-1]) + "\n" + parts[-1]
         self.console.print(
             Padding(Text(info_line, style=OUTPUT), (0, 0, 0, 2))
         )
-        self.console.print(Padding(Text("/model  /provider  |  Ctrl+O: tool details  |  Alt+Enter: newline  |  Ctrl+D: exit", style=MUTED), (0, 0, 0, 2)))
+        shortcuts = "/model  /provider  |  Ctrl+O: details  |  Alt+Enter: newline  |  Ctrl+D: exit"
+        if self.console.width < 70:
+            shortcuts = "/model  /provider\nCtrl+O: details  Ctrl+D: exit"
+        self.console.print(Padding(Text(shortcuts, style=MUTED), (0, 0, 0, 2)))
         self.console.print(Padding(Rule(style=MUTED), (1, 2, 0, 2)))
 
     def clear(self):
@@ -210,7 +215,7 @@ class UI:
         color = ERROR if failed else USER
         label = TOOL_LABELS.get(name, name)
         detail = self._tool_detail(name, args)
-        if not (self.tools_expanded or self.verbose):
+        if not self.tools_expanded:
             detail_text = Text(detail)
             detail_text.truncate(max(8, self.console.width - len(label) - len(status) - (6 if nested else 2) - 12), overflow="ellipsis")
             detail = detail_text.plain
@@ -219,7 +224,7 @@ class UI:
                                (f"  [{status}]", color))
         indent = 6 if nested else 2
         self.console.print(Padding(header, (1, 2, 0, indent)))
-        expanded = self.tools_expanded or self.verbose
+        expanded = self.tools_expanded
         if name == "str_replace" and not failed and isinstance(args.get("old_str"), str) and isinstance(args.get("new_str"), str):
             difference = list(difflib.unified_diff(args["old_str"].splitlines(), args["new_str"].splitlines(), lineterm="", n=1))[2:]
             body = "\n".join(difference)
@@ -349,7 +354,7 @@ class UI:
         """The plan, as a checklist. The raw tool output is never worth showing."""
         done = sum(1 for t in todos if t["status"] == "done")
 
-        if not (self.tools_expanded or self.verbose):
+        if not self.tools_expanded:
             active = next((t["content"] for t in todos if t["status"] == "in_progress"), "")
             suffix = f"  {active}" if active else ""
             line = Text.assemble(("+ Plan  ", f"bold {TOOL}"), (f"{done}/{len(todos)} done", USER), (suffix, OUTPUT))
@@ -401,6 +406,7 @@ class UI:
             return code != 0, "ok" if code == 0 else f"exit {code}"
         for prefix, status in (("Error:", "error"), ("Blocked by policy", "blocked"),
                                ("The user denied", "denied"), ("Timed out", "timeout"),
+                               ("Interrupted before", "interrupted"), ("No skill named", "missing"),
                                ("(stopped after", "incomplete")):
             if result.startswith(prefix):
                 return True, status
