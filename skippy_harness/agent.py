@@ -42,9 +42,11 @@ def main():
             validated = models.validate_model(config.MODEL)
             ui.note(f"Connected to {config.ACTIVE_PROVIDER}: {len(available)} available models. Selected: {validated} (tools supported).")
             if config.ACTIVE_PROVIDER == "openrouter":
-                models.request_json("GET", config.BASE_URL.rstrip("/") + "/key",
-                                    headers={"Authorization": f"Bearer {config.API_KEY}"})
+                key = models.request_json("GET", config.BASE_URL.rstrip("/") + "/key",
+                                          headers={"Authorization": f"Bearer {config.API_KEY}"}).get("data", {})
                 ui.note("OpenRouter API key accepted.")
+                if key.get("limit_remaining") is not None and key["limit_remaining"] <= 0:
+                    raise ValueError("OpenRouter reports no remaining allowance for this key. Adjust its limit in OpenRouter or use Ollama.")
         except Exception as err:
             ui.note(str(err))
             raise SystemExit(1)

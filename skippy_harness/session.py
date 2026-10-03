@@ -125,7 +125,7 @@ def open_session(session_id):
 
 def title(messages):
     for message in messages:
-        if message["role"] == "user":
+        if message["role"] == "user" and "<summary>" not in (message.get("content") or ""):
             return " ".join(str(message.get("content") or "").split())[:60]
     return "(empty)"
 

@@ -137,6 +137,15 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(config.MODEL, "new:2b")
         self.assertIn("OLLAMA_MODEL=new:2b", config.PROJECT_ENV.read_text())
 
+    def test_direct_provider_command_selects_and_persists_correct_backend(self):
+        config.configure(provider="openrouter", model="cloud/model")
+        with patch.object(models, "validate_model", return_value="local:2b"), \
+             patch.object(commands, "ui"), patch.object(commands, "redraw", side_effect=lambda m, _:m):
+            commands.handle("/provider ollama", [])
+        self.assertEqual(config.ACTIVE_PROVIDER, "ollama")
+        self.assertEqual(config.MODEL, "local:2b")
+        self.assertIn("PROVIDER=ollama", config.PROJECT_ENV.read_text())
+
     def test_menu_uses_one_based_selection(self):
         ui = UI()
         with patch.object(ui.console, "print"), patch("skippy_harness.ui.prompt.read", return_value="1"):
