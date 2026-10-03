@@ -40,13 +40,20 @@ class UI:
 
     # ---------------------------------------------------------------- input
 
-    def banner(self, sandbox_name="none"):
+    def banner(self, sandbox_name="none", provider="", model=""):
         self.console.print()
         self.console.print(
             Rule(Text(" Skippy Harness ", style=f"bold {ACCENT}"), style=MUTED)
         )
+        parts = []
+        if provider:
+            parts.append(f"provider: {provider}")
+        if model:
+            parts.append(f"model: {model}")
+        parts.append(f"sandbox: {sandbox_name}")
+        info_line = "  ·  ".join(parts) + "  ·  opt-enter for a newline  ·  ctrl-d to exit"
         self.console.print(
-            Padding(Text(f"sandbox: {sandbox_name}  ·  opt-enter for a newline  ·  ctrl-d to exit", style=MUTED), (0, 0, 0, 2))
+            Padding(Text(info_line, style=MUTED), (0, 0, 0, 2))
         )
 
     def clear(self):

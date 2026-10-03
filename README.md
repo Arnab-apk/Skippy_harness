@@ -40,20 +40,52 @@ Alternatively, install using `pip`:
 pip install -e .
 ```
 
-### Configuration
+### Configuration & Multi-Provider Support
 
-Skippy Harness reads configuration from environment variables or `~/.agents/env`:
+Skippy Harness supports multiple LLM providers out of the box with auto-detection:
 
-Create `~/.agents/env` or export environment variables:
+- **OpenRouter** (Claude 3.7/3.5, GPT-4o, DeepSeek, etc.)
+- **OpenAI** (GPT-4o, o3-mini, o1)
+- **Groq** (Ultra-fast Llama 3.3, Qwen 2.5 Coder)
+- **DeepSeek** (DeepSeek-V3, DeepSeek-R1)
+- **Google Gemini** (Gemini 2.5 Flash, Gemini 2.5 Pro)
+- **Mistral AI** (Codestral, Mistral Large)
+- **Together AI** (Open-source model hosting)
+- **Ollama** (Local models running on `localhost:11434`)
+- **Custom** (Any OpenAI-compatible endpoint)
+
+#### Quick Setup Wizard
+
+If no configuration exists, simply run:
 
 ```bash
-# Required
-BASE_URL="https://api.openai.com/v1"
-API_KEY="your-api-key-here"
+uv run skippy
+```
 
-# Optional
-MODEL="deepseek/deepseek-v4-flash"
-CONTEXT_WINDOW=128000
+Skippy will launch an interactive setup wizard to select your provider and save your key to `.env`. You can re-run this setup at any time with:
+
+```bash
+uv run skippy --setup
+```
+
+#### Manual Configuration (`.env`)
+
+Copy `.env.example` to `.env` and fill in whichever keys you have:
+
+```bash
+cp .env.example .env
+```
+
+```ini
+# Active provider to use (optional, auto-detected from set keys)
+PROVIDER=openrouter
+
+# Store as many keys as you like:
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENAI_API_KEY=sk-...
+GROQ_API_KEY=gsk_...
+DEEPSEEK_API_KEY=sk-...
+GEMINI_API_KEY=...
 ```
 
 ---
@@ -66,30 +98,33 @@ Start Skippy Harness:
 uv run skippy
 ```
 
-Or using the standard entrypoint:
-
-```bash
-python -m skippy_harness.agent
-```
-
 ### CLI Options
 
-- `--resume`: Automatically restore and continue your most recent session.
-- `--debug`: Display raw model responses and token usage diagnostics.
+- `--provider <name>`: Switch provider directly on launch (e.g. `uv run skippy --provider groq`)
+- `--model <name>`: Override model name (e.g. `uv run skippy --model gpt-4o-mini`)
+- `--setup`: Launch the interactive provider configuration wizard
+- `--resume`: Automatically restore and continue your most recent session
+- `--debug`: Display raw model responses and token usage diagnostics
 
+Examples:
 ```bash
+uv run skippy --provider openrouter --model anthropic/claude-3.7-sonnet
+uv run skippy --provider groq
 uv run skippy --resume
 ```
 
-### Interactive Commands
+### Interactive In-Chat Commands
 
 During a session, you can use built-in slash commands:
 
-- `/compact` - Manually trigger context compaction.
-- `/sessions` - List and resume previous chat sessions.
-- `/rewind [n]` - Rewind conversation by `n` turns (default: 1).
-- `Option+Enter` / `Alt+Enter` - Insert a newline in prompt.
-- `Ctrl+D` - Exit the agent session.
+- `/provider` - View active provider or switch between providers on the fly
+- `/model [name]` - View current model, choose from recommendations, or set a custom model
+- `/compact` - Manually trigger context compaction
+- `/sessions` - List and resume previous chat sessions
+- `/rewind [n]` - Rewind conversation by `n` turns (default: 1)
+- `/help` - Show all available commands
+- `Alt+Enter` / `Opt+Enter` - Insert a newline in prompt
+- `Ctrl+D` - Exit the agent session
 
 ---
 

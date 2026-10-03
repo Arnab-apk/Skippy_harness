@@ -7,10 +7,33 @@ from . import config
 from .skills import skills_prompt
 from .tools import TOOLS, TOOL_SCHEMAS
 
-client = OpenAI(
-    base_url=config.BASE_URL,
-    api_key=config.API_KEY,
-)
+_client = None
+
+
+def get_client():
+    global _client
+    if _client is None:
+        if not config.is_configured() and config.ACTIVE_PROVIDER != "ollama":
+            config.interactive_setup()
+        _client = OpenAI(
+            base_url=config.BASE_URL,
+            api_key=config.API_KEY or "ollama",
+        )
+    return _client
+
+
+def reset_client():
+    global _client
+    _client = None
+
+
+class ClientProxy:
+    """Proxy object so existing imports of `client` work seamlessly across provider switches."""
+    def __getattr__(self, name):
+        return getattr(get_client(), name)
+
+
+client = ClientProxy()
 
 SYSTEM_PROMPT = f"""
 You are a coding agent. Your job is to code. Always code.
@@ -49,7 +72,8 @@ If a skill matches what the user wants, call read_skill first and follow it.
 
 
 def call_llm(messages, tools=None):
-    response = client.chat.completions.create(
+    active_client = get_client()
+    response = active_client.chat.completions.create(
         model=config.MODEL,
         messages=messages,
         tools=tools or TOOL_SCHEMAS,
@@ -57,12 +81,12 @@ def call_llm(messages, tools=None):
 
     message = response.choices[0].message
 
-    completion_details = response.usage.completion_tokens_details
-    prompt_details = response.usage.prompt_tokens_details
+    completion_details = response.usage.completion_tokens_details if response.usage else None
+    prompt_details = response.usage.prompt_tokens_details if response.usage else None
 
     usage = {
-        "prompt_tokens": response.usage.prompt_tokens,
-        "completion_tokens": response.usage.completion_tokens,
+        "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
+        "completion_tokens": response.usage.completion_tokens if response.usage else 0,
         "reasoning_tokens": getattr(completion_details, "reasoning_tokens", None),
         "cached_tokens": getattr(prompt_details, "cached_tokens", None),
     }

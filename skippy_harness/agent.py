@@ -2,23 +2,37 @@ import argparse
 
 from . import commands
 from . import compact
+from . import config
 from . import history
+from . import sandbox
 from . import session
 from .context import reminder
 from .llm import SYSTEM_PROMPT, call_llm
-from . import sandbox
 from .todos import active_form
 from .tools import execute
 from .ui import ui
 
 
 def main():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Skippy Harness: A minimal coding agent harness")
     parser.add_argument("--resume", action="store_true", help="continue the last session")
     parser.add_argument("--debug", action="store_true", help="show the raw model response")
+    parser.add_argument(
+        "--provider",
+        type=str,
+        help="LLM provider (openrouter, openai, groq, deepseek, gemini, mistral, together, ollama, custom)",
+    )
+    parser.add_argument("--model", type=str, help="model identifier to use")
+    parser.add_argument("--setup", action="store_true", help="run provider setup wizard")
     cli = parser.parse_args()
 
-    ui.banner(sandbox.name())
+    # Ensure provider is configured or launch interactive setup
+    if cli.setup or not config.is_configured():
+        config.interactive_setup(provider=cli.provider, model=cli.model)
+    elif cli.provider or cli.model:
+        config.configure(provider=cli.provider, model=cli.model)
+
+    ui.banner(sandbox.name(), config.ACTIVE_PROVIDER, config.MODEL)
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if cli.resume:
